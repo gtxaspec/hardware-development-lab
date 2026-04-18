@@ -1,0 +1,13 @@
+[Unit]
+Description=Relay Control Panel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/relay-panel/relay-panel.py
+WorkingDirectory=/opt/relay-panel
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

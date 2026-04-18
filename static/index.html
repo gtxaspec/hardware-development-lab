@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Relay Control Panel</title>
+<style>
+:root {
+  --bg: #0f0f13;
+  --surface: #1a1a24;
+  --surface-hover: #22222f;
+  --surface-active: #2a2a3a;
+  --text: #e8e8ec;
+  --text-dim: #777;
+  --text-muted: #555;
+  --on: #00e676;
+  --on-glow: rgba(0, 230, 118, 0.25);
+  --off: #555;
+  --off-surface: #161620;
+  --accent: #5c6bc0;
+  --accent-hover: #7986cb;
+  --danger: #ef5350;
+  --danger-hover: #f44336;
+  --focus: #42a5f5;
+  --focus-ring: rgba(66, 165, 245, 0.5);
+  --border: #2a2a36;
+  --radius: 8px;
+  --transition: 150ms ease;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.header h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.poll-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 150ms ease;
+  flex-shrink: 0;
+}
+
+.poll-dot.active {
+  background: var(--on);
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Buttons */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  transition: background var(--transition), box-shadow var(--transition);
+  color: var(--text);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.btn-surface {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+}
+.btn-surface:hover { background: var(--surface-active); }
+
+.btn-accent {
+  background: var(--accent);
+}
+.btn-accent:hover { background: var(--accent-hover); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+}
+.btn-danger:hover { background: var(--danger); color: white; }
+
+.btn-sm {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+/* Board sections */
+.boards-container {
+  padding: 1rem 1.5rem;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-bottom: 4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+}
+
+.board-section {
+  flex: 1 1 400px;
+  min-width: 300px;
+  max-width: 100%;
+}
+
+.board-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.board-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.board-name-input {
+  font-size: 1.1rem;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--focus);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.125rem 0.375rem;
+  outline: none;
+}
+
+.board-addr {
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  cursor: default;
+}
+body.edit-mode .board-addr { cursor: pointer; }
+
+.board-settings-inline {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.8125rem;
+}
+
+.board-settings-inline label {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.board-settings-inline input,
+.board-settings-inline select {
+  background: var(--bg);
+  border: 1px solid var(--focus);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.2rem 0.375rem;
+  font-size: 0.8125rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  outline: none;
+  width: 4.5rem;
+}
+
+.board-settings-inline select {
+  width: auto;
+  font-family: inherit;
+}
+
+.board-settings-inline .btn-sm {
+  padding: 0.25rem 0.5rem;
+}
+
+.board-error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+  margin-left: auto;
+}
+
+.board-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* Relay grid - default auto-fill */
+.relay-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.625rem;
+}
+
+/* Board physical layout */
+.relay-board-view {
+  display: inline-block;
+}
+
+.board-outline {
+  display: grid;
+  gap: 0.375rem;
+  padding: 1rem;
+  border: 2px solid #2d3a2d;
+  border-radius: 12px;
+  background: #111814;
+  position: relative;
+}
+
+.board-outline::before {
+  content: attr(data-label);
+  position: absolute;
+  top: -0.6rem;
+  left: 1rem;
+  background: #111814;
+  padding: 0 0.375rem;
+  font-size: 0.625rem;
+  color: #4a6a4a;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* 16-channel: 2 cols x 8 rows */
+.board-outline.board-16 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: repeat(8, auto);
+  width: min(400px, 100%);
+}
+
+/* 8-channel: 1 col x 8 rows */
+.board-outline.board-8 {
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(8, auto);
+  width: min(200px, 100%);
+}
+
+/* 4-channel: 1 col x 4 rows */
+.board-outline.board-4 {
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(4, auto);
+  width: min(200px, 100%);
+}
+
+/* 2-channel: 1 col x 2 rows */
+.board-outline.board-2 {
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(2, auto);
+  width: min(200px, 100%);
+}
+
+/* 1-channel: single */
+.board-outline.board-1 {
+  grid-template-columns: 1fr;
+  width: min(200px, 100%);
+}
+
+/* Compact card for board view */
+.board-outline .relay-card {
+  padding: 0.5rem 0.625rem;
+  min-height: 44px;
+  gap: 0.25rem;
+}
+
+.board-outline .relay-name {
+  font-size: 0.75rem;
+}
+
+.board-outline .relay-state {
+  display: none;
+}
+
+.board-outline .relay-num {
+  font-size: 0.625rem;
+}
+
+.board-outline .relay-indicator {
+  width: 8px;
+  height: 8px;
+}
+
+/* Layout toggle button */
+.btn-layout {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text-dim);
+}
+.btn-layout:hover { background: var(--surface-active); color: var(--text); }
+.btn-layout.active { border-color: #4a6a4a; color: #6a9a6a; }
+
+/* Relay card */
+.relay-card {
+  background: var(--off-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.875rem;
+  min-height: 80px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  user-select: none;
+  position: relative;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.relay-card:hover {
+  background: var(--surface-hover);
+  border-color: #3a3a4a;
+}
+
+.relay-card:focus-visible {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.relay-card.is-on {
+  background: var(--surface);
+  border-color: var(--on);
+  box-shadow: 0 0 12px var(--on-glow);
+}
+
+.relay-card.is-on:focus-visible {
+  border-color: var(--focus);
+  box-shadow: 0 0 12px var(--on-glow), 0 0 0 3px var(--focus-ring);
+}
+
+.relay-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.relay-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--off);
+  transition: background var(--transition), box-shadow var(--transition);
+}
+
+.relay-card.is-on .relay-indicator {
+  background: var(--on);
+  box-shadow: 0 0 8px var(--on);
+}
+
+.relay-num {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.relay-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.relay-name-input {
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--bg);
+  border: 1px solid var(--focus);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.125rem 0.25rem;
+  width: 100%;
+  outline: none;
+}
+
+.relay-state {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.relay-card.is-on .relay-state {
+  color: var(--on);
+}
+
+/* Keyboard hint */
+.keyboard-hint {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: flex;
+  gap: 1rem;
+  z-index: 10;
+}
+
+.keyboard-hint kbd {
+  display: inline-block;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.375rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.6875rem;
+  margin-right: 0.25rem;
+}
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: 90%;
+  max-width: 420px;
+}
+
+.modal h2 {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.modal label {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+  margin-bottom: 0.25rem;
+  margin-top: 0.75rem;
+}
+
+.modal input, .modal select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  outline: none;
+}
+.modal input:focus, .modal select:focus {
+  border-color: var(--focus);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+/* Toast */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  animation: fadeIn 200ms ease, fadeOut 200ms ease 2.3s forwards;
+}
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+/* Loading */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-dim);
+}
+
+/* Edit button on card — hidden unless edit mode */
+.relay-edit-btn {
+  display: none;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 0.125rem 0.375rem;
+  font-size: 0.625rem;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  margin-left: auto;
+  margin-right: 0.375rem;
+}
+
+body.edit-mode .relay-edit-btn {
+  display: block;
+}
+
+.relay-card:has(.relay-name-input) .relay-edit-btn {
+  visibility: hidden;
+}
+
+/* Edit mode toggle */
+.btn-edit-mode {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.btn-edit-mode:hover { background: var(--surface-active); }
+.btn-edit-mode.active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* Board name clickable cursor only in edit mode */
+.board-name { cursor: default; }
+body.edit-mode .board-name { cursor: pointer; }
+
+/* Responsive - Tablet */
+@media (max-width: 900px) {
+  .relay-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
+
+/* Responsive - Mobile */
+@media (max-width: 600px) {
+  .header { padding: 0.75rem 1rem; }
+  .header h1 { font-size: 1.1rem; }
+  .boards-container { padding: 0.75rem 0.75rem; padding-bottom: 2rem; flex-direction: column; }
+  .relay-grid { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+  .relay-card { padding: 0.75rem; min-height: 72px; }
+  .keyboard-hint { display: none; }
+
+  .board-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .board-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .board-addr { font-size: 0.75rem; }
+
+}
+
+/* Responsive - Very small */
+@media (max-width: 360px) {
+  .relay-grid { grid-template-columns: 1fr 1fr; gap: 0.375rem; }
+  .relay-card { padding: 0.625rem; min-height: 64px; }
+  .relay-name { font-size: 0.8125rem; }
+}
+
+/* Touch device detection - show edit buttons */
+@media (hover: none) and (pointer: coarse) {
+  .relay-card { min-height: 80px; }
+  .relay-card:active {
+    background: var(--surface-active);
+    transform: scale(0.97);
+    transition: transform 50ms ease;
+  }
+  .relay-card.is-on:active {
+    background: var(--surface-active);
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Relay Control Panel <span class="poll-dot" id="pollDot" title="Polling indicator"></span></h1>
+  <div class="header-actions">
+    <button class="btn-edit-mode btn-sm" id="editModeBtn" onclick="toggleEditMode()" title="Toggle edit mode">Edit</button>
+    <button class="btn-surface btn-sm" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
+  </div>
+</div>
+
+<div class="boards-container" id="boards"></div>
+
+<div class="keyboard-hint">
+  <span><kbd>Arrow</kbd> Navigate</span>
+  <span><kbd>Enter</kbd> Toggle</span>
+  <span><kbd>E</kbd> Edit mode</span>
+  <span><kbd>A</kbd> All on</span>
+  <span><kbd>Z</kbd> All off</span>
+</div>
+
+<div class="modal-overlay" id="addBoardModal">
+  <div class="modal">
+    <h2>Add Board</h2>
+    <label for="boardName">Name</label>
+    <input type="text" id="boardName" value="Board" placeholder="Board name">
+    <label for="boardAddr">I2C Address</label>
+    <input type="text" id="boardAddr" value="0x21" placeholder="0x20-0x27">
+    <label for="boardBus">I2C Bus</label>
+    <input type="number" id="boardBus" value="2" min="0" max="10">
+    <label for="boardSize">Relay Count</label>
+    <select id="boardSize">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="4">4</option>
+      <option value="8">8</option>
+      <option value="16" selected>16</option>
+    </select>
+    <div class="modal-actions">
+      <button class="btn-surface" onclick="closeModal()">Cancel</button>
+      <button class="btn-accent" onclick="addBoard()">Add Board</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const boardsEl = document.getElementById('boards');
+let state = { boards: [] };
+let focusedBoard = 0;
+let focusedRelay = 0;
+let editing = false;
+let editMode = false;
+let pollTimer = null;
+
+function toggleEditMode() {
+  editMode = !editMode;
+  document.body.classList.toggle('edit-mode', editMode);
+  document.getElementById('editModeBtn').classList.toggle('active', editMode);
+  render();
+}
+
+// --- API ---
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+async function fetchState() {
+  try {
+    state = await api('GET', '/api/state');
+    render();
+  } catch (e) {
+    boardsEl.innerHTML = '<div class="loading">Failed to connect to server</div>';
+  }
+}
+
+async function toggleRelay(boardIdx, relayNum) {
+  const data = await api('POST', '/api/relay/toggle', { board: boardIdx, relay: relayNum });
+  // Update local state immediately
+  const board = state.boards[boardIdx];
+  if (board) {
+    const relay = board.relays.find(r => r.num === relayNum);
+    if (relay) relay.state = data.state;
+    render();
+  }
+}
+
+async function setAll(boardIdx, on) {
+  await api('POST', '/api/board/all', { board: boardIdx, state: on });
+  fetchState();
+}
+
+async function renameRelay(boardIdx, relayNum, name) {
+  await api('PUT', '/api/relay/name', { board: boardIdx, relay: relayNum, name });
+  const board = state.boards[boardIdx];
+  if (board) {
+    const relay = board.relays.find(r => r.num === relayNum);
+    if (relay) relay.name = name;
+  }
+}
+
+async function renameBoard(boardIdx, name) {
+  await api('PUT', '/api/board/name', { board: boardIdx, name });
+  const board = state.boards[boardIdx];
+  if (board) board.name = name;
+}
+
+async function toggleLayout(boardIdx) {
+  const board = state.boards[boardIdx];
+  if (!board) return;
+  const newLayout = board.layout === 'board' ? 'grid' : 'board';
+  await api('PUT', '/api/board/layout', { board: boardIdx, layout: newLayout });
+  board.layout = newLayout;
+  render();
+}
+
+async function toggleFlip(boardIdx) {
+  const data = await api('PUT', '/api/board/flip', { board: boardIdx });
+  const board = state.boards[boardIdx];
+  if (board) board.flipped = data.flipped;
+  render();
+}
+
+// Returns relay indices in physical board display order
+function boardDisplayOrder(size) {
+  if (size === 16) {
+    // 2 columns x 8 rows: left=8-15, right=0-7
+    const order = [];
+    for (let row = 0; row < 8; row++) {
+      order.push(8 + row);  // left column
+      order.push(row);      // right column
+    }
+    return order;
+  }
+  // For 1, 2, 4, 8: just sequential top to bottom
+  return Array.from({ length: size }, (_, i) => i);
+}
+
+async function resetBoard(boardIdx) {
+  const result = await api('POST', '/api/board/reset', { board: boardIdx });
+  if (result.error) {
+    toast('Reset failed: ' + result.error);
+  } else {
+    toast('Board reset - all OFF');
+    fetchState();
+  }
+}
+
+async function deleteBoard(boardIdx) {
+  if (!confirm(`Delete ${state.boards[boardIdx]?.name || 'this board'}?`)) return;
+  await api('DELETE', `/api/boards/${boardIdx}`);
+  fetchState();
+}
+
+async function addBoard() {
+  const name = document.getElementById('boardName').value || 'Board';
+  const address = document.getElementById('boardAddr').value || '0x21';
+  const bus = parseInt(document.getElementById('boardBus').value) || 2;
+  const size = parseInt(document.getElementById('boardSize').value) || 16;
+  const result = await api('POST', '/api/boards', { name, address, bus, size });
+  if (result.error) {
+    toast(result.error);
+  } else {
+    closeModal();
+    fetchState();
+    toast(`Added board at ${address}`);
+  }
+}
+
+// --- Rendering ---
+function render() {
+  if (!state.boards || state.boards.length === 0) {
+    boardsEl.innerHTML = '<div class="loading">No boards configured</div>';
+    return;
+  }
+
+  const html = state.boards.map((board, bi) => {
+    const isBoardView = board.layout === 'board';
+    const layoutBtnClass = isBoardView ? 'btn-layout active' : 'btn-layout';
+    const layoutBtnText = isBoardView ? 'PCB' : 'Grid';
+    const flipBtnClass = board.flipped ? 'btn-layout active' : 'btn-layout';
+
+    // Build relay cards - in board view, reorder to match physical layout
+    let displayOrder = isBoardView ? boardDisplayOrder(board.size) : board.relays.map(r => r.num);
+    if (board.flipped) displayOrder = [...displayOrder].reverse();
+
+    const relayCards = displayOrder.map(relayNum => {
+      const ri = board.relays.findIndex(r => r.num === relayNum);
+      const relay = board.relays[ri];
+      if (!relay) return '';
+      const onClass = relay.state === 'on' ? 'is-on' : '';
+      const stateText = relay.state === 'on' ? 'ON' : 'OFF';
+      const focused = (bi === focusedBoard && ri === focusedRelay);
+      return `<div class="relay-card ${onClass}"
+                   tabindex="${focused ? '0' : '-1'}"
+                   data-board="${bi}" data-relay="${relay.num}" data-ri="${ri}"
+                   role="button"
+                   aria-label="${relay.name} - ${stateText}"
+                   aria-pressed="${relay.state === 'on'}">
+        <div class="relay-top">
+          <div class="relay-indicator"></div>
+          <button class="relay-edit-btn" data-edit-board="${bi}" data-edit-ri="${ri}" title="Edit name">edit</button>
+          <span class="relay-num">#${relay.num}</span>
+        </div>
+        <div class="relay-name">${escHtml(relay.name)}</div>
+        <div class="relay-state">${stateText}</div>
+      </div>`;
+    }).join('');
+
+    let relayContainer;
+    if (isBoardView) {
+      relayContainer = `<div class="relay-board-view">
+        <div class="board-outline board-${board.size}" data-label="${board.size}ch ${board.address}">
+          ${relayCards}
+        </div>
+      </div>`;
+    } else {
+      relayContainer = `<div class="relay-grid">${relayCards}</div>`;
+    }
+
+    return `<div class="board-section" data-board-idx="${bi}">
+      <div class="board-header">
+        <span class="board-name" data-board-idx="${bi}" title="Click to rename">${escHtml(board.name)}</span>
+        <span class="board-addr" data-board-idx="${bi}" title="Click to edit in edit mode">${board.address} bus:${board.bus} (${board.size}ch)</span>
+        ${board.error ? `<span class="board-error">${escHtml(board.error)}</span>` : ''}
+        <div class="board-actions">
+          <button class="${layoutBtnClass} btn-sm" onclick="toggleLayout(${bi})" title="Toggle layout">${layoutBtnText}</button>
+          <button class="${flipBtnClass} btn-sm" onclick="toggleFlip(${bi})" title="Flip relay order">Flip</button>
+          <button class="btn-surface btn-sm" onclick="setAll(${bi}, true)">All On</button>
+          <button class="btn-surface btn-sm" onclick="setAll(${bi}, false)">All Off</button>
+          <button class="btn-surface btn-sm" onclick="resetBoard(${bi})" title="Re-init I2C and set all OFF">Reset</button>
+          ${editMode && state.boards.length > 1 ? `<button class="btn-danger btn-sm" onclick="deleteBoard(${bi})">Remove</button>` : ''}
+        </div>
+      </div>
+      ${relayContainer}
+    </div>`;
+  }).join('');
+
+  boardsEl.innerHTML = html;
+
+  // Restore focus
+  const focusedCard = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
+  if (focusedCard && document.activeElement?.classList?.contains('relay-card')) {
+    focusedCard.focus();
+  }
+}
+
+// --- Events ---
+boardsEl.addEventListener('click', (e) => {
+  // Ignore clicks on inputs (active inline editing)
+  if (e.target.tagName === 'INPUT') return;
+
+  // Edit button on card
+  const editBtn = e.target.closest('.relay-edit-btn');
+  if (editBtn) {
+    e.stopPropagation();
+    const bi = parseInt(editBtn.dataset.editBoard);
+    const ri = parseInt(editBtn.dataset.editRi);
+    startEditRelayName(bi, ri);
+    return;
+  }
+
+  const card = e.target.closest('.relay-card');
+  if (card) {
+    const bi = parseInt(card.dataset.board);
+    focusedBoard = bi;
+    focusedRelay = parseInt(card.dataset.ri);
+    if (editMode) {
+      if (!editing) startEditRelayName(bi, focusedRelay);
+    } else {
+      const relay = parseInt(card.dataset.relay);
+      toggleRelay(bi, relay);
+    }
+    return;
+  }
+
+  const boardName = e.target.closest('.board-name');
+  if (boardName && editMode) {
+    startEditBoardName(parseInt(boardName.dataset.boardIdx));
+    return;
+  }
+
+  const boardAddr = e.target.closest('.board-addr');
+  if (boardAddr && editMode) {
+    startEditBoardSettings(parseInt(boardAddr.dataset.boardIdx));
+  }
+});
+
+// Double-click on relay card to edit name (only in edit mode)
+boardsEl.addEventListener('dblclick', (e) => {
+  if (!editMode) return;
+  const card = e.target.closest('.relay-card');
+  if (card) {
+    e.preventDefault();
+    const bi = parseInt(card.dataset.board);
+    const ri = parseInt(card.dataset.ri);
+    startEditRelayName(bi, ri);
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (editing) return;
+
+  // Don't capture if focus is in an input, modal, etc.
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+
+  const board = state.boards[focusedBoard];
+  if (!board) return;
+
+  const isBoardView = board.layout === 'board';
+  const count = board.relays.length;
+
+  // In PCB mode, navigate by visual position in the display order
+  // Display order for 16ch: [8,0,9,1,10,2,...] in a 2-col grid
+  // In grid mode, navigate by relay index with column awareness
+  let cols, visPos, displayOrder;
+  if (isBoardView) {
+    displayOrder = boardDisplayOrder(board.size);
+    if (board.flipped) displayOrder = [...displayOrder].reverse();
+    cols = board.size > 8 ? 2 : 1;
+    visPos = displayOrder.indexOf(board.relays[focusedRelay].num);
+  } else {
+    displayOrder = board.relays.map(r => r.num);
+    if (board.flipped) displayOrder = [...displayOrder].reverse();
+    cols = getGridCols();
+    visPos = displayOrder.indexOf(board.relays[focusedRelay].num);
+  }
+
+  function setFocusFromVisPos(newVisPos) {
+    const relayNum = displayOrder[newVisPos];
+    focusedRelay = board.relays.findIndex(r => r.num === relayNum);
+  }
+
+  switch (e.key) {
+    case 'ArrowRight':
+      e.preventDefault();
+      if (visPos + 1 < count) {
+        setFocusFromVisPos(visPos + 1);
+      } else {
+        setFocusFromVisPos(0);
+      }
+      focusAndRender();
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (visPos - 1 >= 0) {
+        setFocusFromVisPos(visPos - 1);
+      } else {
+        setFocusFromVisPos(count - 1);
+      }
+      focusAndRender();
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (visPos + cols < count) {
+        setFocusFromVisPos(visPos + cols);
+      } else if (focusedBoard < state.boards.length - 1) {
+        focusedBoard++;
+        focusedRelay = 0;
+      }
+      focusAndRender();
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (visPos - cols >= 0) {
+        setFocusFromVisPos(visPos - cols);
+      } else if (focusedBoard > 0) {
+        focusedBoard--;
+        const prevBoard = state.boards[focusedBoard];
+        focusedRelay = Math.min(focusedRelay, prevBoard.relays.length - 1);
+      }
+      focusAndRender();
+      break;
+    case 'Enter':
+    case ' ':
+      e.preventDefault();
+      if (editMode) {
+        startEditRelayName(focusedBoard, focusedRelay);
+      } else if (board.relays[focusedRelay]) {
+        toggleRelay(focusedBoard, board.relays[focusedRelay].num);
+      }
+      break;
+    case 'e':
+    case 'E':
+      if (!editMode) { toggleEditMode(); break; }
+      e.preventDefault();
+      startEditRelayName(focusedBoard, focusedRelay);
+      break;
+    case 'a':
+      e.preventDefault();
+      setAll(focusedBoard, true);
+      toast('All relays ON');
+      break;
+    case 'z':
+      e.preventDefault();
+      setAll(focusedBoard, false);
+      toast('All relays OFF');
+      break;
+  }
+});
+
+// Click on relay card to focus it
+boardsEl.addEventListener('focus', (e) => {
+  const card = e.target.closest('.relay-card');
+  if (card) {
+    focusedBoard = parseInt(card.dataset.board);
+    focusedRelay = parseInt(card.dataset.ri);
+  }
+}, true);
+
+function focusAndRender() {
+  render();
+  const card = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
+  if (card) card.focus();
+}
+
+function getGridCols() {
+  const section = boardsEl.querySelector(`.board-section[data-board-idx="${focusedBoard}"]`);
+  if (!section) return 4;
+  const grid = section.querySelector('.relay-grid') || section.querySelector('.board-outline');
+  if (!grid) return 4;
+  const style = getComputedStyle(grid);
+  return style.gridTemplateColumns.split(' ').length;
+}
+
+// --- Inline editing ---
+function startEditRelayName(boardIdx, relayIdx) {
+  editing = true;
+  const relay = state.boards[boardIdx]?.relays[relayIdx];
+  if (!relay) return;
+  const card = boardsEl.querySelector(`.relay-card[data-board="${boardIdx}"][data-ri="${relayIdx}"]`);
+  if (!card) return;
+  const nameEl = card.querySelector('.relay-name');
+  const current = relay.name;
+  nameEl.innerHTML = `<input class="relay-name-input" type="text" value="${escAttr(current)}">`;
+  const input = nameEl.querySelector('input');
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save && input.value !== current) {
+      await renameRelay(boardIdx, relay.num, input.value);
+    }
+    render();
+    const newCard = boardsEl.querySelector(`.relay-card[data-board="${boardIdx}"][data-ri="${relayIdx}"]`);
+    if (newCard) newCard.focus();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function startEditBoardName(boardIdx) {
+  editing = true;
+  const board = state.boards[boardIdx];
+  if (!board) return;
+  const headerEl = boardsEl.querySelector(`.board-section[data-board-idx="${boardIdx}"] .board-name`);
+  if (!headerEl) return;
+  const current = board.name;
+  headerEl.outerHTML = `<input class="board-name-input" type="text" value="${escAttr(current)}" data-board-idx="${boardIdx}">`;
+  const input = boardsEl.querySelector(`.board-name-input[data-board-idx="${boardIdx}"]`);
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save && input.value !== current) {
+      await renameBoard(boardIdx, input.value);
+    }
+    render();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+async function saveBoardSettings(boardIdx, addr, bus, size) {
+  const result = await api('PUT', '/api/board/settings', {
+    board: boardIdx, address: addr, bus: bus, size: size
+  });
+  if (result.error) {
+    toast(result.error);
+    return false;
+  }
+  return true;
+}
+
+function startEditBoardSettings(boardIdx) {
+  editing = true;
+  const board = state.boards[boardIdx];
+  if (!board) return;
+  const addrEl = boardsEl.querySelector(`.board-section[data-board-idx="${boardIdx}"] .board-addr`);
+  if (!addrEl) return;
+
+  const curAddr = board.address;
+  const curBus = board.bus;
+  const curSize = board.size;
+
+  const sizeOptions = [1,2,4,8,16].map(s =>
+    `<option value="${s}"${s === curSize ? ' selected' : ''}>${s}ch</option>`
+  ).join('');
+
+  addrEl.outerHTML = `<div class="board-settings-inline" data-board-idx="${boardIdx}">
+    <label>addr</label>
+    <input type="text" id="settAddr${boardIdx}" value="${curAddr}" style="width:4rem">
+    <label>bus</label>
+    <input type="number" id="settBus${boardIdx}" value="${curBus}" min="0" max="10" style="width:3rem">
+    <label>size</label>
+    <select id="settSize${boardIdx}">${sizeOptions}</select>
+    <button class="btn-accent btn-sm" id="settSave${boardIdx}">Save</button>
+    <button class="btn-surface btn-sm" id="settCancel${boardIdx}">Cancel</button>
+  </div>`;
+
+  const container = boardsEl.querySelector(`.board-settings-inline[data-board-idx="${boardIdx}"]`);
+  container.querySelector(`#settAddr${boardIdx}`).focus();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save) {
+      const newAddr = container.querySelector(`#settAddr${boardIdx}`).value || curAddr;
+      const newBus = parseInt(container.querySelector(`#settBus${boardIdx}`).value) || curBus;
+      const newSize = parseInt(container.querySelector(`#settSize${boardIdx}`).value) || curSize;
+      if (newAddr !== curAddr || newBus !== curBus || newSize !== curSize) {
+        const ok = await saveBoardSettings(boardIdx, newAddr, newBus, newSize);
+        if (ok) {
+          toast(`Updated to ${newAddr} bus:${newBus} ${newSize}ch`);
+          fetchState();
+          return;
+        }
+      }
+    }
+    render();
+  };
+
+  container.querySelector(`#settSave${boardIdx}`).addEventListener('click', (e) => {
+    e.stopPropagation();
+    finish(true);
+  });
+  container.querySelector(`#settCancel${boardIdx}`).addEventListener('click', (e) => {
+    e.stopPropagation();
+    finish(false);
+  });
+
+  container.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+}
+
+// --- Modal ---
+function addBoardModal() {
+  document.getElementById('addBoardModal').classList.add('open');
+  document.getElementById('boardName').focus();
+}
+
+function closeModal() {
+  document.getElementById('addBoardModal').classList.remove('open');
+}
+
+document.getElementById('addBoardModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('addBoardModal').classList.contains('open')) {
+    closeModal();
+  }
+});
+
+// --- Toast ---
+function toast(msg) {
+  const container = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+
+// --- Helpers ---
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// --- Polling ---
+function startPolling() {
+  // Poll every 3 seconds for state changes (e.g. from other clients)
+  const dot = document.getElementById('pollDot');
+  pollTimer = setInterval(async () => {
+    if (editing) return;
+    dot.classList.add('active');
+    try {
+      const newState = await api('GET', '/api/state');
+      state = newState;
+      render();
+    } catch (e) {}
+    setTimeout(() => dot.classList.remove('active'), 200);
+  }, 1000);
+}
+
+// --- Init ---
+fetchState().then(() => {
+  startPolling();
+  // Initial focus
+  setTimeout(() => {
+    const first = boardsEl.querySelector('.relay-card[tabindex="0"]');
+    if (first) first.focus();
+  }, 100);
+});
+</script>
+
+</body>
+</html>
