@@ -8,7 +8,14 @@ BASE_URL = "http://your-pi:8080"
 
 mcp = FastMCP(
     "relay-panel",
-    instructions="Control I2C relay boards on your-pi. Relays can be toggled, set on/off, or controlled in bulk. Each relay has a number and a custom name. State is always 'on' or 'off'.",
+    instructions=(
+        "Control I2C relay boards and direct GPIO pins on your-pi. "
+        "Relays are grouped on I2C boards (board index + relay number). "
+        "GPIOs are individual wiringPi-numbered pins used for direct HI/LOW control "
+        "(e.g. driving a USB switch from pin 40 / wPi 27). "
+        "Both can be toggled, set on/off, listed, added, removed, and renamed. "
+        "State is always 'on' or 'off'."
+    ),
 )
 
 
@@ -29,10 +36,12 @@ def api(method: str, path: str, body: dict | None = None) -> dict:
 
 @mcp.tool()
 def list_relays() -> dict:
-    """List all relay boards with their relays, names, and current states (on/off).
+    """List all relay boards and configured GPIOs with their current states.
 
-    Returns all configured boards. Each board has an index, name, I2C address/bus,
-    and a list of relays with their number, name, and state ('on' or 'off').
+    Returns all configured I2C boards and direct GPIO pins. Each board has an
+    index, name, I2C address/bus, and a list of relays (num, name, state).
+    Each GPIO has a wiringPi number, optional physical pin number, name, and state.
+    State is always 'on' or 'off'.
     """
     return api("GET", "/api/state")
 
@@ -125,6 +134,81 @@ def reset_board(board: int) -> dict:
         board: Board index (0-based)
     """
     return api("POST", "/api/board/reset", {"board": board})
+
+
+@mcp.tool()
+def list_gpios() -> dict:
+    """List all configured GPIO pins with their current states.
+
+    Returns each GPIO's wiringPi number (wpi), optional physical pin number,
+    name, and state ('on' or 'off'). If the hardware read fails, 'error' is set.
+    """
+    return api("GET", "/api/gpios")
+
+
+@mcp.tool()
+def add_gpio(wpi: int, name: str = "", pin: int | None = None) -> dict:
+    """Configure a new GPIO pin for HI/LOW control.
+
+    Sets the pin to output mode and starts it OFF. Use the wiringPi number
+    shown by `gpio readall` (the wPi column).
+
+    Args:
+        wpi: wiringPi pin number (from `gpio readall`)
+        name: Optional display name (default: 'GPIO {wpi}')
+        pin: Optional physical header pin number (display only)
+    """
+    body: dict = {"wpi": wpi}
+    if name:
+        body["name"] = name
+    if pin is not None:
+        body["pin"] = pin
+    return api("POST", "/api/gpios", body)
+
+
+@mcp.tool()
+def remove_gpio(wpi: int) -> dict:
+    """Unconfigure a GPIO pin. Does not change the pin state on the hardware.
+
+    Args:
+        wpi: wiringPi pin number
+    """
+    return api("DELETE", f"/api/gpios/{wpi}")
+
+
+@mcp.tool()
+def set_gpio(wpi: int, state: str) -> dict:
+    """Set a GPIO pin HIGH ('on') or LOW ('off').
+
+    Args:
+        wpi: wiringPi pin number of a configured GPIO
+        state: 'on' or 'off'
+    """
+    return api("POST", "/api/gpio/set", {
+        "wpi": wpi,
+        "state": state == "on",
+    })
+
+
+@mcp.tool()
+def toggle_gpio(wpi: int) -> dict:
+    """Toggle a GPIO pin and return its new state.
+
+    Args:
+        wpi: wiringPi pin number of a configured GPIO
+    """
+    return api("POST", "/api/gpio/toggle", {"wpi": wpi})
+
+
+@mcp.tool()
+def rename_gpio(wpi: int, name: str) -> dict:
+    """Rename a configured GPIO pin.
+
+    Args:
+        wpi: wiringPi pin number of a configured GPIO
+        name: New display name
+    """
+    return api("PUT", "/api/gpio/name", {"wpi": wpi, "name": name})
 
 
 if __name__ == "__main__":

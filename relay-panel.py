@@ -17,14 +17,19 @@ LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 8080
 
 i2c_lock = threading.Lock()
+gpio_lock = threading.Lock()
 config_lock = threading.Lock()
 
 
 def load_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {"boards": []}
+            cfg = json.load(f)
+    else:
+        cfg = {}
+    cfg.setdefault("boards", [])
+    cfg.setdefault("gpios", [])
+    return cfg
 
 
 def save_config(config):
@@ -118,6 +123,68 @@ def set_all(bus, addr, size, state):
         i2c_write_reg(bus, addr, "0x03", mask_b)
 
 
+def gpio_cmd(*args):
+    """Run a `gpio` CLI command and return (stdout, returncode)."""
+    full_cmd = ["gpio"] + [str(a) for a in args]
+    try:
+        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=5)
+        return result.stdout.strip(), result.returncode
+    except Exception as e:
+        return str(e), 1
+
+
+def gpio_init_pin(wpi, initial_state=False):
+    """Set a pin to output mode and to the given initial state."""
+    with gpio_lock:
+        gpio_cmd("mode", wpi, "out")
+        gpio_cmd("write", wpi, 1 if initial_state else 0)
+
+
+def gpio_read(wpi):
+    """Read current state of a pin (True/False)."""
+    with gpio_lock:
+        out, rc = gpio_cmd("read", wpi)
+    if rc != 0:
+        raise RuntimeError(f"gpio read {wpi} failed: {out}")
+    return out.strip() == "1"
+
+
+def gpio_write(wpi, state):
+    """Set a pin high or low."""
+    with gpio_lock:
+        out, rc = gpio_cmd("write", wpi, 1 if state else 0)
+    if rc != 0:
+        raise RuntimeError(f"gpio write {wpi} failed: {out}")
+
+
+def gpio_toggle_pin(wpi):
+    """Toggle a pin and return the new state (read back)."""
+    current = gpio_read(wpi)
+    gpio_write(wpi, not current)
+    return not current
+
+
+def get_gpio_states(gpios):
+    """Return list of GPIO entries with live state read from hardware."""
+    result = []
+    for g in gpios:
+        wpi = g["wpi"]
+        try:
+            state = gpio_read(wpi)
+            error = None
+        except Exception as e:
+            state = False
+            error = str(e)
+        result.append({
+            "wpi": wpi,
+            "pin": g.get("pin"),
+            "name": g.get("name", f"GPIO {wpi}"),
+            "state": "on" if state else "off",
+            "error": error,
+        })
+    return result
+
+
 def get_board_states(board):
     """Get all relay states for a board."""
     bus = board["bus"]
@@ -193,7 +260,14 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             config = load_config()
             state = get_full_state(config)
-            self.send_json({"boards": state})
+            gpios = get_gpio_states(config.get("gpios", []))
+            self.send_json({"boards": state, "gpios": gpios})
+            return
+
+        if path == "/api/gpios":
+            config = load_config()
+            gpios = get_gpio_states(config.get("gpios", []))
+            self.send_json({"gpios": gpios})
             return
 
         # Serve static files
@@ -305,6 +379,104 @@ class RelayHandler(BaseHTTPRequestHandler):
                 pass
             self.send_json({"ok": True})
 
+        elif path == "/api/gpios":
+            # Add a new GPIO
+            try:
+                wpi = int(body.get("wpi"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "wpi (integer wiringPi number) is required"}, 400)
+                return
+            name = body.get("name") or f"GPIO {wpi}"
+            pin_val = body.get("pin")
+            pin = None
+            if pin_val is not None and pin_val != "":
+                try:
+                    pin = int(pin_val)
+                except (TypeError, ValueError):
+                    self.send_json({"error": "pin must be an integer"}, 400)
+                    return
+            initial = bool(body.get("state", False))
+            with config_lock:
+                config = load_config()
+                for g in config["gpios"]:
+                    if g["wpi"] == wpi:
+                        self.send_json({"error": f"GPIO wPi {wpi} already configured"}, 400)
+                        return
+                config["gpios"].append({
+                    "wpi": wpi,
+                    "pin": pin,
+                    "name": name,
+                    "state": initial,
+                })
+                save_config(config)
+            try:
+                gpio_init_pin(wpi, initial)
+            except Exception as e:
+                self.send_json({"error": f"gpio init failed: {e}"}, 500)
+                return
+            self.send_json({"ok": True})
+
+        elif path == "/api/gpio/toggle":
+            try:
+                wpi = int(body.get("wpi"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "wpi is required"}, 400)
+                return
+            with config_lock:
+                config = load_config()
+                entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
+                if entry is None:
+                    self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
+                    return
+            try:
+                new_state = gpio_toggle_pin(wpi)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
+            with config_lock:
+                config = load_config()
+                for g in config["gpios"]:
+                    if g["wpi"] == wpi:
+                        g["state"] = new_state
+                        break
+                save_config(config)
+            self.send_json({
+                "wpi": wpi,
+                "name": entry.get("name", f"GPIO {wpi}"),
+                "state": "on" if new_state else "off",
+            })
+
+        elif path == "/api/gpio/set":
+            try:
+                wpi = int(body.get("wpi"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "wpi is required"}, 400)
+                return
+            state = bool(body.get("state", False))
+            with config_lock:
+                config = load_config()
+                entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
+                if entry is None:
+                    self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
+                    return
+            try:
+                gpio_write(wpi, state)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
+            with config_lock:
+                config = load_config()
+                for g in config["gpios"]:
+                    if g["wpi"] == wpi:
+                        g["state"] = state
+                        break
+                save_config(config)
+            self.send_json({
+                "wpi": wpi,
+                "name": entry.get("name", f"GPIO {wpi}"),
+                "state": "on" if state else "off",
+            })
+
         elif path == "/api/board/reset":
             board_idx = body.get("board", 0)
             config = load_config()
@@ -352,6 +524,47 @@ class RelayHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid board"}, 400)
                     return
                 config["boards"][board_idx]["name"] = name
+                save_config(config)
+            self.send_json({"ok": True})
+
+        elif path == "/api/gpio/name":
+            try:
+                wpi = int(body.get("wpi"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "wpi is required"}, 400)
+                return
+            name = body.get("name", "")
+            with config_lock:
+                config = load_config()
+                entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
+                if entry is None:
+                    self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
+                    return
+                entry["name"] = name
+                save_config(config)
+            self.send_json({"ok": True})
+
+        elif path == "/api/gpio/pin":
+            try:
+                wpi = int(body.get("wpi"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "wpi is required"}, 400)
+                return
+            pin_val = body.get("pin")
+            pin = None
+            if pin_val is not None and pin_val != "":
+                try:
+                    pin = int(pin_val)
+                except (TypeError, ValueError):
+                    self.send_json({"error": "pin must be an integer"}, 400)
+                    return
+            with config_lock:
+                config = load_config()
+                entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
+                if entry is None:
+                    self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
+                    return
+                entry["pin"] = pin
                 save_config(config)
             self.send_json({"ok": True})
 
@@ -434,6 +647,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                 config["boards"].pop(board_idx)
                 save_config(config)
             self.send_json({"ok": True})
+        elif path.startswith("/api/gpios/"):
+            try:
+                wpi = int(path.split("/")[-1])
+            except ValueError:
+                self.send_json({"error": "Invalid wpi"}, 400)
+                return
+            with config_lock:
+                config = load_config()
+                before = len(config["gpios"])
+                config["gpios"] = [g for g in config["gpios"] if g["wpi"] != wpi]
+                if len(config["gpios"]) == before:
+                    self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
+                    return
+                save_config(config)
+            self.send_json({"ok": True})
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -447,6 +675,18 @@ def init_boards(config):
             print(f"  Initialized board at {board['address']} on bus {board['bus']} - all OFF")
         except Exception as e:
             print(f"  Failed to init board at {board['address']}: {e}")
+
+
+def init_gpios(config):
+    """Restore each configured GPIO to its last known state."""
+    for g in config.get("gpios", []):
+        wpi = g["wpi"]
+        state = bool(g.get("state", False))
+        try:
+            gpio_init_pin(wpi, state)
+            print(f"  Initialized GPIO wPi {wpi} ({g.get('name', '?')}) -> {'ON' if state else 'OFF'}")
+        except Exception as e:
+            print(f"  Failed to init GPIO wPi {wpi}: {e}")
 
 
 def main():
@@ -466,6 +706,8 @@ def main():
 
     print("Initializing boards...")
     init_boards(config)
+    print("Initializing GPIOs...")
+    init_gpios(config)
 
     server = HTTPServer((LISTEN_HOST, LISTEN_PORT), RelayHandler)
     print(f"Relay Control Panel running on http://{LISTEN_HOST}:{LISTEN_PORT}")

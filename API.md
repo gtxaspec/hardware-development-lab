@@ -157,6 +157,93 @@ curl -s -X PUT -H 'Content-Type: application/json' \
 
 Response: `{"flipped": true}`
 
+## GPIO Pins (direct HI/LOW control)
+
+GPIOs are individual wiringPi-numbered pins (see `gpio readall`) used for
+direct on/off control of arbitrary loads — e.g. a USB switch on physical pin 40
+(wPi 27). Each configured GPIO is set to output mode when added and its last
+known state is restored on server startup.
+
+### Get GPIOs only
+
+```bash
+curl -s http://your-pi:8080/api/gpios
+```
+
+Response:
+```json
+{
+  "gpios": [
+    {"wpi": 27, "pin": 40, "name": "USB Switch", "state": "on", "error": null}
+  ]
+}
+```
+
+GPIOs are also included in `GET /api/state` under the `gpios` key.
+
+### Add a GPIO
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"wpi":27,"pin":40,"name":"USB Switch"}' \
+  http://your-pi:8080/api/gpios
+```
+
+`wpi` is required; `pin` and `name` are optional. Starts in OFF state and sets
+`gpio mode <wpi> out`.
+
+Response: `{"ok": true}`
+
+### Remove a GPIO
+
+```bash
+curl -s -X DELETE http://your-pi:8080/api/gpios/27
+```
+
+The path parameter is the wPi number. Does not change the pin state on the hardware.
+
+Response: `{"ok": true}`
+
+### Toggle a GPIO
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"wpi":27}' \
+  http://your-pi:8080/api/gpio/toggle
+```
+
+Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
+
+### Set a GPIO on or off
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"wpi":27,"state":true}' \
+  http://your-pi:8080/api/gpio/set
+```
+
+Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
+
+### Rename a GPIO
+
+```bash
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"wpi":27,"name":"Front USB"}' \
+  http://your-pi:8080/api/gpio/name
+```
+
+Response: `{"ok": true}`
+
+### Update physical pin label
+
+```bash
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"wpi":27,"pin":40}' \
+  http://your-pi:8080/api/gpio/pin
+```
+
+Response: `{"ok": true}`
+
 ## Errors
 
 All errors return HTTP 400 with:
@@ -168,6 +255,9 @@ All errors return HTTP 400 with:
 
 - `board` is always the 0-based board index
 - `relay` is the relay number (0-15 for a 16ch board)
-- All state changes take effect immediately on the hardware via i2c
+- `wpi` is the wiringPi pin number (from `gpio readall`)
+- All state changes take effect immediately on the hardware (via `i2cset` for
+  relays, `gpio write` for GPIOs)
 - Config persists in `/opt/relay-panel/config.json`
+- GPIO state is restored on server start (mode out + last value)
 - Web UI at `http://your-pi:8080`

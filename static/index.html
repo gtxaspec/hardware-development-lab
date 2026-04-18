@@ -559,6 +559,33 @@ body.edit-mode .relay-edit-btn {
   visibility: hidden;
 }
 
+/* GPIO card extras */
+.gpio-card { position: relative; }
+
+.gpio-card .relay-num {
+  margin-left: auto;
+}
+
+.gpio-remove-btn {
+  display: none;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  padding: 0 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  cursor: pointer;
+  z-index: 1;
+}
+.gpio-remove-btn:hover { background: var(--danger); color: white; }
+body.edit-mode .gpio-remove-btn { display: block; }
+
+.gpio-card:has(.relay-name-input) .gpio-remove-btn { visibility: hidden; }
+
 /* Edit mode toggle */
 .btn-edit-mode {
   background: var(--surface-hover);
@@ -632,6 +659,7 @@ body.edit-mode .board-name { cursor: pointer; }
   <div class="header-actions">
     <button class="btn-edit-mode btn-sm" id="editModeBtn" onclick="toggleEditMode()" title="Toggle edit mode">Edit</button>
     <button class="btn-surface btn-sm" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
+    <button class="btn-surface btn-sm" onclick="addGpioModal()" title="Add GPIO pin">+ GPIO</button>
   </div>
 </div>
 
@@ -669,11 +697,27 @@ body.edit-mode .board-name { cursor: pointer; }
   </div>
 </div>
 
+<div class="modal-overlay" id="addGpioModal">
+  <div class="modal">
+    <h2>Add GPIO</h2>
+    <label for="gpioWpi">wiringPi # (required)</label>
+    <input type="number" id="gpioWpi" placeholder="e.g. 27 (from gpio readall)">
+    <label for="gpioPin">Physical Pin # (optional, display only)</label>
+    <input type="number" id="gpioPin" placeholder="e.g. 40">
+    <label for="gpioName">Name</label>
+    <input type="text" id="gpioName" placeholder="e.g. USB Switch">
+    <div class="modal-actions">
+      <button class="btn-surface" onclick="closeGpioModal()">Cancel</button>
+      <button class="btn-accent" onclick="addGpio()">Add GPIO</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toasts"></div>
 
 <script>
 const boardsEl = document.getElementById('boards');
-let state = { boards: [] };
+let state = { boards: [], gpios: [] };
 let focusedBoard = 0;
 let focusedRelay = 0;
 let editing = false;
@@ -782,6 +826,55 @@ async function deleteBoard(boardIdx) {
   fetchState();
 }
 
+async function toggleGpio(wpi) {
+  const data = await api('POST', '/api/gpio/toggle', { wpi });
+  if (data.error) { toast(data.error); return; }
+  const g = state.gpios.find(x => x.wpi === wpi);
+  if (g) g.state = data.state;
+  render();
+}
+
+async function setGpioState(wpi, on) {
+  const data = await api('POST', '/api/gpio/set', { wpi, state: on });
+  if (data.error) { toast(data.error); return; }
+  const g = state.gpios.find(x => x.wpi === wpi);
+  if (g) g.state = data.state;
+  render();
+}
+
+async function renameGpio(wpi, name) {
+  await api('PUT', '/api/gpio/name', { wpi, name });
+  const g = state.gpios.find(x => x.wpi === wpi);
+  if (g) g.name = name;
+}
+
+async function removeGpio(wpi) {
+  const g = state.gpios.find(x => x.wpi === wpi);
+  if (!confirm(`Remove GPIO ${g?.name || 'wPi ' + wpi}?`)) return;
+  const data = await api('DELETE', `/api/gpios/${wpi}`);
+  if (data.error) { toast(data.error); return; }
+  toast(`Removed GPIO wPi ${wpi}`);
+  fetchState();
+}
+
+async function addGpio() {
+  const wpi = parseInt(document.getElementById('gpioWpi').value);
+  if (isNaN(wpi)) { toast('wPi number required'); return; }
+  const pinVal = document.getElementById('gpioPin').value;
+  const pin = pinVal === '' ? null : parseInt(pinVal);
+  const name = document.getElementById('gpioName').value || `GPIO ${wpi}`;
+  const body = { wpi, name };
+  if (pin !== null && !isNaN(pin)) body.pin = pin;
+  const result = await api('POST', '/api/gpios', body);
+  if (result.error) {
+    toast(result.error);
+  } else {
+    closeGpioModal();
+    fetchState();
+    toast(`Added GPIO wPi ${wpi}`);
+  }
+}
+
 async function addBoard() {
   const name = document.getElementById('boardName').value || 'Board';
   const address = document.getElementById('boardAddr').value || '0x21';
@@ -798,13 +891,57 @@ async function addBoard() {
 }
 
 // --- Rendering ---
+function renderGpiosSection() {
+  const gpios = state.gpios || [];
+  if (gpios.length === 0 && !editMode) return '';
+
+  const cards = gpios.map(g => {
+    const onClass = g.state === 'on' ? 'is-on' : '';
+    const stateText = g.state === 'on' ? 'ON' : 'OFF';
+    const numLabel = g.pin != null ? `wPi ${g.wpi} · p${g.pin}` : `wPi ${g.wpi}`;
+    const err = g.error ? `<div class="board-error">${escHtml(g.error)}</div>` : '';
+    return `<div class="relay-card gpio-card ${onClass}"
+                 data-gpio-wpi="${g.wpi}"
+                 role="button"
+                 aria-label="${escAttr(g.name)} - ${stateText}"
+                 aria-pressed="${g.state === 'on'}">
+      <button class="gpio-remove-btn" data-remove-gpio="${g.wpi}" title="Remove this GPIO">×</button>
+      <div class="relay-top">
+        <div class="relay-indicator"></div>
+        <button class="relay-edit-btn" data-edit-gpio="${g.wpi}" title="Edit name">edit</button>
+        <span class="relay-num">${numLabel}</span>
+      </div>
+      <div class="relay-name">${escHtml(g.name)}</div>
+      <div class="relay-state">${stateText}</div>
+      ${err}
+    </div>`;
+  }).join('');
+
+  const empty = gpios.length === 0
+    ? '<div class="loading" style="min-height:80px;font-size:0.875rem">No GPIOs configured — click + GPIO to add one</div>'
+    : '';
+
+  return `<div class="board-section gpios-section" data-gpios>
+    <div class="board-header">
+      <span class="board-name">GPIOs</span>
+      <span class="board-addr">wiringOP · ${gpios.length} pin${gpios.length === 1 ? '' : 's'}</span>
+      <div class="board-actions">
+        <button class="btn-surface btn-sm" onclick="addGpioModal()">+ GPIO</button>
+      </div>
+    </div>
+    ${cards ? `<div class="relay-grid">${cards}</div>` : empty}
+  </div>`;
+}
+
 function render() {
-  if (!state.boards || state.boards.length === 0) {
-    boardsEl.innerHTML = '<div class="loading">No boards configured</div>';
+  const noBoards = !state.boards || state.boards.length === 0;
+  const noGpios = !state.gpios || state.gpios.length === 0;
+  if (noBoards && noGpios) {
+    boardsEl.innerHTML = '<div class="loading">No boards or GPIOs configured</div>';
     return;
   }
 
-  const html = state.boards.map((board, bi) => {
+  const boardsHtml = (state.boards || []).map((board, bi) => {
     const isBoardView = board.layout === 'board';
     const layoutBtnClass = isBoardView ? 'btn-layout active' : 'btn-layout';
     const layoutBtnText = isBoardView ? 'PCB' : 'Grid';
@@ -866,7 +1003,7 @@ function render() {
     </div>`;
   }).join('');
 
-  boardsEl.innerHTML = html;
+  boardsEl.innerHTML = boardsHtml + renderGpiosSection();
 
   // Restore focus
   const focusedCard = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
@@ -880,13 +1017,37 @@ boardsEl.addEventListener('click', (e) => {
   // Ignore clicks on inputs (active inline editing)
   if (e.target.tagName === 'INPUT') return;
 
+  // GPIO remove button
+  const gpioRemoveBtn = e.target.closest('.gpio-remove-btn');
+  if (gpioRemoveBtn) {
+    e.stopPropagation();
+    removeGpio(parseInt(gpioRemoveBtn.dataset.removeGpio));
+    return;
+  }
+
   // Edit button on card
   const editBtn = e.target.closest('.relay-edit-btn');
   if (editBtn) {
     e.stopPropagation();
-    const bi = parseInt(editBtn.dataset.editBoard);
-    const ri = parseInt(editBtn.dataset.editRi);
-    startEditRelayName(bi, ri);
+    if (editBtn.dataset.editGpio != null) {
+      startEditGpioName(parseInt(editBtn.dataset.editGpio));
+    } else {
+      const bi = parseInt(editBtn.dataset.editBoard);
+      const ri = parseInt(editBtn.dataset.editRi);
+      startEditRelayName(bi, ri);
+    }
+    return;
+  }
+
+  // GPIO card click
+  const gpioCard = e.target.closest('.gpio-card');
+  if (gpioCard) {
+    const wpi = parseInt(gpioCard.dataset.gpioWpi);
+    if (editMode) {
+      if (!editing) startEditGpioName(wpi);
+    } else {
+      toggleGpio(wpi);
+    }
     return;
   }
 
@@ -1029,10 +1190,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Click on relay card to focus it
+// Click on relay card to focus it (skip gpio cards — they aren't in keyboard nav)
 boardsEl.addEventListener('focus', (e) => {
   const card = e.target.closest('.relay-card');
-  if (card) {
+  if (card && card.dataset.board != null) {
     focusedBoard = parseInt(card.dataset.board);
     focusedRelay = parseInt(card.dataset.ri);
   }
@@ -1075,6 +1236,35 @@ function startEditRelayName(boardIdx, relayIdx) {
     render();
     const newCard = boardsEl.querySelector(`.relay-card[data-board="${boardIdx}"][data-ri="${relayIdx}"]`);
     if (newCard) newCard.focus();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function startEditGpioName(wpi) {
+  editing = true;
+  const g = state.gpios.find(x => x.wpi === wpi);
+  if (!g) return;
+  const card = boardsEl.querySelector(`.gpio-card[data-gpio-wpi="${wpi}"]`);
+  if (!card) return;
+  const nameEl = card.querySelector('.relay-name');
+  const current = g.name;
+  nameEl.innerHTML = `<input class="relay-name-input" type="text" value="${escAttr(current)}">`;
+  const input = nameEl.querySelector('input');
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save && input.value !== current) {
+      await renameGpio(wpi, input.value);
+    }
+    render();
   };
 
   input.addEventListener('keydown', (e) => {
@@ -1197,14 +1387,30 @@ function closeModal() {
   document.getElementById('addBoardModal').classList.remove('open');
 }
 
+function addGpioModal() {
+  document.getElementById('gpioWpi').value = '';
+  document.getElementById('gpioPin').value = '';
+  document.getElementById('gpioName').value = '';
+  document.getElementById('addGpioModal').classList.add('open');
+  document.getElementById('gpioWpi').focus();
+}
+
+function closeGpioModal() {
+  document.getElementById('addGpioModal').classList.remove('open');
+}
+
 document.getElementById('addBoardModal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeModal();
 });
 
+document.getElementById('addGpioModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeGpioModal();
+});
+
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('addBoardModal').classList.contains('open')) {
-    closeModal();
-  }
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('addBoardModal').classList.contains('open')) closeModal();
+  if (document.getElementById('addGpioModal').classList.contains('open')) closeGpioModal();
 });
 
 // --- Toast ---
