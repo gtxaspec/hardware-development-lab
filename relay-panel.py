@@ -16,6 +16,9 @@ STATIC_DIR = BASE_DIR / "static"
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 8080
 
+USB_SYS_PATH = Path("/sys/bus/usb/devices")
+USB_VID_FILTER = "a108"  # Ingenic bootrom (c309) / U-Boot DFU gadget (4d44)
+
 i2c_lock = threading.Lock()
 gpio_lock = threading.Lock()
 config_lock = threading.Lock()
@@ -185,6 +188,37 @@ def get_gpio_states(gpios):
     return result
 
 
+def read_usb_attr(dev_dir, name):
+    """Read a sysfs attribute, returning None if absent/unreadable."""
+    try:
+        return (dev_dir / name).read_text().strip()
+    except OSError:
+        return None
+
+
+def get_usb_devices(vid=USB_VID_FILTER):
+    """List connected USB devices whose idVendor matches vid."""
+    devices = []
+    try:
+        entries = sorted(p for p in USB_SYS_PATH.iterdir() if ":" not in p.name)
+    except OSError:
+        return devices
+    for dev_dir in entries:
+        if read_usb_attr(dev_dir, "idVendor") != vid:
+            continue
+        devices.append({
+            "port": dev_dir.name,
+            "vid": vid,
+            "pid": read_usb_attr(dev_dir, "idProduct"),
+            "product": read_usb_attr(dev_dir, "product"),
+            "manufacturer": read_usb_attr(dev_dir, "manufacturer"),
+            "serial": read_usb_attr(dev_dir, "serial"),
+            "busnum": read_usb_attr(dev_dir, "busnum"),
+            "devnum": read_usb_attr(dev_dir, "devnum"),
+        })
+    return devices
+
+
 def get_board_states(board):
     """Get all relay states for a board."""
     bus = board["bus"]
@@ -261,13 +295,17 @@ class RelayHandler(BaseHTTPRequestHandler):
             config = load_config()
             state = get_full_state(config)
             gpios = get_gpio_states(config.get("gpios", []))
-            self.send_json({"boards": state, "gpios": gpios})
+            self.send_json({"boards": state, "gpios": gpios, "usb": get_usb_devices()})
             return
 
         if path == "/api/gpios":
             config = load_config()
             gpios = get_gpio_states(config.get("gpios", []))
             self.send_json({"gpios": gpios})
+            return
+
+        if path == "/api/usb":
+            self.send_json({"usb": get_usb_devices()})
             return
 
         # Serve static files

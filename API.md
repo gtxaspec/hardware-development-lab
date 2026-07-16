@@ -244,6 +244,40 @@ curl -s -X PUT -H 'Content-Type: application/json' \
 
 Response: `{"ok": true}`
 
+## USB Boot Devices (read-only)
+
+Live list of connected USB devices with Ingenic's vendor ID `a108` — the
+mask-ROM bootrom (`a108:c309`) and U-Boot's DFU gadget (`a108:4d44`). Read
+fresh from `/sys/bus/usb/devices` on every request, so devices appear and
+disappear as they physically enumerate. Also shown live at the bottom of
+the web UI (1 s poll).
+
+```bash
+curl -s http://your-pi:8080/api/usb
+```
+
+Response:
+```json
+{
+  "usb": [
+    {
+      "port": "4-1.1.1.2.1",
+      "vid": "a108",
+      "pid": "c309",
+      "product": "USB Boot Device",
+      "manufacturer": "Ingenic",
+      "serial": null,
+      "busnum": "4",
+      "devnum": "71"
+    }
+  ]
+}
+```
+
+`port` is the sysfs bus-port path (stable per physical socket). String
+descriptors the device does not report come back as `null` (the bootrom has
+no serial). The same list is included in `GET /api/state` under the `usb` key.
+
 ## Errors
 
 All errors return HTTP 400 with:

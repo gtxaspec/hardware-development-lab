@@ -586,6 +586,24 @@ body.edit-mode .gpio-remove-btn { display: block; }
 
 .gpio-card:has(.relay-name-input) .gpio-remove-btn { visibility: hidden; }
 
+/* USB device section */
+.usb-section { flex-basis: 100%; }
+
+.usb-card { cursor: default; }
+
+.usb-detail {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usb-detail.mono {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.6875rem;
+}
+
 /* Edit mode toggle */
 .btn-edit-mode {
   background: var(--surface-hover);
@@ -933,11 +951,35 @@ function renderGpiosSection() {
   </div>`;
 }
 
+function renderUsbSection() {
+  const devs = state.usb || [];
+  const cards = devs.map(d => {
+    const pidLabel = `${d.vid}:${d.pid || '????'}`;
+    return `<div class="relay-card usb-card is-on">
+      <div class="relay-top">
+        <div class="relay-indicator"></div>
+        <span class="relay-num">${escHtml(pidLabel)} · port ${escHtml(d.port)}</span>
+      </div>
+      <div class="relay-name" title="${escAttr(d.product || '')}">${escHtml(d.product || '(no product string)')}</div>
+      <div class="usb-detail">${escHtml(d.manufacturer || '(no manufacturer string)')}</div>
+      <div class="usb-detail mono">S/N ${escHtml(d.serial || '(none)')}</div>
+    </div>`;
+  }).join('');
+  const empty = '<div class="loading" style="min-height:60px;font-size:0.875rem">No Ingenic (a108) devices connected</div>';
+  return `<div class="board-section usb-section">
+    <div class="board-header">
+      <span class="board-name">USB Boot Devices</span>
+      <span class="board-addr">idVendor a108 · ${devs.length} connected</span>
+    </div>
+    ${devs.length ? `<div class="relay-grid">${cards}</div>` : empty}
+  </div>`;
+}
+
 function render() {
   const noBoards = !state.boards || state.boards.length === 0;
   const noGpios = !state.gpios || state.gpios.length === 0;
   if (noBoards && noGpios) {
-    boardsEl.innerHTML = '<div class="loading">No boards or GPIOs configured</div>';
+    boardsEl.innerHTML = '<div class="loading">No boards or GPIOs configured</div>' + renderUsbSection();
     return;
   }
 
@@ -1003,7 +1045,7 @@ function render() {
     </div>`;
   }).join('');
 
-  boardsEl.innerHTML = boardsHtml + renderGpiosSection();
+  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderUsbSection();
 
   // Restore focus
   const focusedCard = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
@@ -1016,6 +1058,9 @@ function render() {
 boardsEl.addEventListener('click', (e) => {
   // Ignore clicks on inputs (active inline editing)
   if (e.target.tagName === 'INPUT') return;
+
+  // USB device cards are read-only
+  if (e.target.closest('.usb-card')) return;
 
   // GPIO remove button
   const gpioRemoveBtn = e.target.closest('.gpio-remove-btn');
