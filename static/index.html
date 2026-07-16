@@ -589,7 +589,20 @@ body.edit-mode .gpio-remove-btn { display: block; }
 /* USB device section */
 .usb-section { flex-basis: 100%; }
 
+.usb-section .relay-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
 .usb-card { cursor: default; }
+
+.usb-card .relay-top { gap: 0.625rem; }
+
+.usb-card .relay-indicator { flex-shrink: 0; }
+
+.usb-card .relay-num {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 
 .usb-detail {
   font-size: 0.75rem;
