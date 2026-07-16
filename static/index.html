@@ -966,6 +966,10 @@ function renderUsbSection() {
   const devs = state.usb || [];
   const cards = devs.map(d => {
     const pidLabel = `${d.vid}:${d.pid || '????'}`;
+    const sn = d.serial || '(none)';
+    // shrink long serials to fit the card instead of ellipsizing (11px = the normal 0.6875rem)
+    const snPx = Math.max(7, Math.min(11, Math.floor(150 / ((sn.length + 4) * 0.62))));
+    const snStyle = snPx < 11 ? ` style="font-size:${snPx}px"` : '';
     return `<div class="relay-card usb-card is-on">
       <div class="relay-top">
         <div class="relay-indicator"></div>
@@ -974,7 +978,7 @@ function renderUsbSection() {
       <div class="usb-detail mono usb-port">port ${escHtml(d.port)}</div>
       <div class="relay-name" title="${escAttr(d.product || '')}">${escHtml(d.product || '(no product string)')}</div>
       <div class="usb-detail">${escHtml(d.manufacturer || '(no manufacturer string)')}</div>
-      <div class="usb-detail mono">S/N ${escHtml(d.serial || '(none)')}</div>
+      <div class="usb-detail mono" title="S/N ${escAttr(sn)}"${snStyle}>S/N ${escHtml(sn)}</div>
     </div>`;
   }).join('');
   const empty = '<div class="loading" style="min-height:60px;font-size:0.875rem">No Ingenic (a108) devices connected</div>';
