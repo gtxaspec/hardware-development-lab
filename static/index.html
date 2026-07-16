@@ -589,10 +589,6 @@ body.edit-mode .gpio-remove-btn { display: block; }
 /* USB device section */
 .usb-section { flex-basis: 100%; }
 
-.usb-section .relay-grid {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-}
-
 .usb-card { cursor: default; }
 
 .usb-card .relay-top { gap: 0.625rem; }
@@ -600,8 +596,8 @@ body.edit-mode .gpio-remove-btn { display: block; }
 .usb-card .relay-indicator { flex-shrink: 0; }
 
 .usb-card .relay-num {
-  text-align: right;
-  overflow-wrap: anywhere;
+  flex: 1;
+  text-align: center;
 }
 
 .usb-detail {
@@ -971,8 +967,9 @@ function renderUsbSection() {
     return `<div class="relay-card usb-card is-on">
       <div class="relay-top">
         <div class="relay-indicator"></div>
-        <span class="relay-num">${escHtml(pidLabel)} · port ${escHtml(d.port)}</span>
+        <span class="relay-num">${escHtml(pidLabel)}</span>
       </div>
+      <div class="usb-detail mono">port ${escHtml(d.port)}</div>
       <div class="relay-name" title="${escAttr(d.product || '')}">${escHtml(d.product || '(no product string)')}</div>
       <div class="usb-detail">${escHtml(d.manufacturer || '(no manufacturer string)')}</div>
       <div class="usb-detail mono">S/N ${escHtml(d.serial || '(none)')}</div>
