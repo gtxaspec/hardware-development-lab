@@ -1,5 +1,16 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+
+# Site-specific, never committed: config.json describes one physical bench
+# and is written by the API, .env names the machine to deploy to.
 config.json
 .env
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
