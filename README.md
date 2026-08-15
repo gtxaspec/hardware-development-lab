@@ -214,3 +214,7 @@ exposed as tools. That is physical setup, done in the web UI.
 ## API
 
 See [API.md](API.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
