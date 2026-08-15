@@ -2,9 +2,7 @@
 """Relay Control Panel - Web interface for XL9535 I2C relay boards."""
 
 import json
-import os
 import subprocess
-import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -81,15 +79,6 @@ def i2c_write_reg(bus, addr, reg, value):
     """Write a value to a register."""
     with i2c_lock:
         i2c_cmd("i2cset", bus, addr, reg, hex(value))
-
-
-def get_relay_state(bus, addr, relay_num):
-    """Get the state of a single relay."""
-    port_a, port_b = i2c_read_state(bus, addr)
-    if relay_num < 8:
-        return bool(port_a & (1 << relay_num))
-    else:
-        return bool(port_b & (1 << (relay_num - 8)))
 
 
 def set_relay(bus, addr, relay_num, state):

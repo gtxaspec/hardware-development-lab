@@ -1,0 +1,10 @@
+# Dependencies for mcp-server.py only.
+#
+# relay-panel.py deliberately has none - it is pure standard library, so the
+# Orange Pi runs it with the system python and needs no venv, no pip and no
+# network access to be provisioned.
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+httpx>=0.28
+mcp>=1.26
