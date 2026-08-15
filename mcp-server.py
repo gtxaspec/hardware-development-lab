@@ -283,6 +283,69 @@ def leds_off(chip: int | None = None) -> dict:
 
 
 @mcp.tool()
+def set_led_group(chip: int, group: int, level: int | None = None,
+                  percent: float | None = None) -> dict:
+    """Set a whole group of PWM channels from one master level.
+
+    A group is a named set of channels on a chip - e.g. the R, G and B legs of
+    one RGB strip driven together as a single light. Members default to equal
+    weights, so the master simply sets them all the same. Give a member an
+    unequal weight and the master scales them proportionally instead, which
+    holds a calibrated white point while dimming.
+
+    Args:
+        chip: PWM chip index (0-based)
+        group: Group index within that chip (0-based)
+        level: Master duty in counts, 0-4095
+        percent: Master duty as a percentage, 0-100
+    """
+    body: dict = {"chip": chip, "group": group}
+    if level is not None:
+        body["level"] = level
+    elif percent is not None:
+        body["percent"] = percent
+    else:
+        return {"error": "level or percent is required"}
+    return api("POST", "/api/pwm/group", body)
+
+
+@mcp.tool()
+def add_led_group(chip: int, name: str, channels: list[int]) -> dict:
+    """Create a named group of PWM channels driven by one master level.
+
+    Args:
+        chip: PWM chip index (0-based)
+        name: Display name, e.g. "RGB Strip"
+        channels: Channel numbers to drive together, e.g. [1, 2, 3]
+    """
+    return api("POST", "/api/pwm/groups", {
+        "chip": chip,
+        "name": name,
+        "channels": channels,
+    })
+
+
+@mcp.tool()
+def set_led_group_weights(chip: int, group: int, weights: dict) -> dict:
+    """Set per-channel weights for a group, to hold a colour balance on dimming.
+
+    Weights are 0-4095 and are the level each member sits at when the master is
+    full. Equal weights (the default) mean the master sets every member the
+    same. Keys are channel numbers as strings.
+
+    Args:
+        chip: PWM chip index (0-based)
+        group: Group index within that chip
+        weights: e.g. {"1": 4095, "2": 3200, "3": 2600}
+    """
+    return api("PUT", "/api/pwm/group", {
+        "chip": chip,
+        "group": group,
+        "weights": weights,
+    })
+
+
+@mcp.tool()
 def set_led_freq(chip: int, freq_hz: float) -> dict:
     """Set a PWM chip's frequency. Applies to all 16 channels.
 

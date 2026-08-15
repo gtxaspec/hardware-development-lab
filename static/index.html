@@ -473,6 +473,30 @@ body.edit-mode .board-addr { cursor: pointer; }
 
 .pwm-slider:focus-visible { box-shadow: 0 0 0 3px var(--focus-ring); }
 
+/* Group masters read as controls over the channels, not peers of them */
+.pwm-group-card { border-color: var(--accent); }
+
+.pwm-group-card.is-on {
+  border-color: var(--accent-hover);
+  box-shadow: 0 0 12px rgba(92, 107, 192, 0.25);
+}
+
+.pwm-group-card.is-on .relay-indicator {
+  background: var(--accent-hover);
+  box-shadow: 0 0 8px var(--accent-hover);
+}
+
+.pwm-group-card.is-on .pwm-level { color: var(--accent-hover); }
+.pwm-group-card.is-on .pwm-slider::-webkit-slider-thumb { background: var(--accent-hover); }
+.pwm-group-card.is-on .pwm-slider::-moz-range-thumb { background: var(--accent-hover); }
+
+.pwm-mixed {
+  color: var(--accent-hover);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 .pwm-freq {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.75rem;
@@ -1002,19 +1026,58 @@ function pwmPrescaleFor(hz) {
 // they arrive out of order and the strip settles on a stale level.
 const pwmInflight = new Map();
 
-async function pwmSend(chipIdx, ch, level) {
-  const key = `${chipIdx}:${ch}`;
+async function pwmCoalesced(key, level, send) {
   if (pwmInflight.has(key)) { pwmInflight.set(key, level); return; }
   pwmInflight.set(key, level);
   while (pwmInflight.has(key)) {
     const v = pwmInflight.get(key);
-    const data = await api('POST', '/api/pwm/set', { chip: chipIdx, channel: ch, level: v });
+    const data = await send(v);
     if (data && data.error) { toast(data.error); pwmInflight.delete(key); return; }
-    const chip = (state.pwm || [])[chipIdx];
-    const c = chip && chip.channels.find(x => x.ch === ch);
-    if (c) { c.level = data.level; c.percent = data.percent; }
     if (pwmInflight.get(key) === v) pwmInflight.delete(key);
   }
+}
+
+// Repaint one channel card in place. The poll is held off during a drag, so a
+// group master has to push its members' cards itself or they sit stale until
+// the pointer comes up.
+function paintPwmCard(chipIdx, ch, level) {
+  const chip = (state.pwm || [])[chipIdx];
+  const c = chip && chip.channels.find(x => x.ch === ch);
+  if (c) { c.level = level; c.percent = Math.round(1000 * level / PWM_MAX) / 10; }
+  const card = boardsEl.querySelector(`.pwm-card[data-pwm-chip="${chipIdx}"][data-pwm-ch="${ch}"]`);
+  if (!card) return;
+  const lv = card.querySelector('.pwm-level');
+  if (lv) lv.innerHTML = `<span>${(100 * level / PWM_MAX).toFixed(1)}%</span><span>${level}</span>`;
+  card.classList.toggle('is-on', level > 0);
+  const s = card.querySelector('.pwm-slider');
+  if (s && document.activeElement !== s) s.value = level;
+}
+
+async function pwmSend(chipIdx, ch, level) {
+  return pwmCoalesced(`ch:${chipIdx}:${ch}`, level, async (v) => {
+    const data = await api('POST', '/api/pwm/set', { chip: chipIdx, channel: ch, level: v });
+    if (data && !data.error) {
+      const chip = (state.pwm || [])[chipIdx];
+      const c = chip && chip.channels.find(x => x.ch === ch);
+      if (c) { c.level = data.level; c.percent = data.percent; }
+    }
+    return data;
+  });
+}
+
+async function pwmSendGroup(chipIdx, gi, level) {
+  return pwmCoalesced(`g:${chipIdx}:${gi}`, level, async (v) => {
+    const data = await api('POST', '/api/pwm/group', { chip: chipIdx, group: gi, level: v });
+    if (data && !data.error) {
+      const chip = (state.pwm || [])[chipIdx];
+      const g = chip && (chip.groups || []).find(x => x.index === gi);
+      if (g) { g.level = data.level; g.percent = data.percent; g.mixed = false; }
+      for (const [ch, lvl] of Object.entries(data.channels || {})) {
+        paintPwmCard(chipIdx, parseInt(ch), lvl);
+      }
+    }
+    return data;
+  });
 }
 
 async function pwmSetAll(chipIdx, level) {
@@ -1065,13 +1128,67 @@ function startEditPwmName(chipIdx, ch) {
   input.addEventListener('blur', () => finish(true));
 }
 
+async function renamePwmGroup(chipIdx, gi, name) {
+  await api('PUT', '/api/pwm/group', { chip: chipIdx, group: gi, name });
+  await fetchState();
+}
+
+function startEditPwmGroupName(chipIdx, gi) {
+  editing = true;
+  const chip = (state.pwm || [])[chipIdx];
+  const g = chip && (chip.groups || []).find(x => x.index === gi);
+  if (!g) { editing = false; return; }
+  const card = boardsEl.querySelector(`.pwm-group-card[data-pwm-chip="${chipIdx}"][data-pwm-group="${gi}"]`);
+  if (!card) { editing = false; return; }
+  const nameEl = card.querySelector('.relay-name');
+  const current = g.name;
+  nameEl.innerHTML = `<input class="relay-name-input" type="text" value="${escAttr(current)}">`;
+  const input = nameEl.querySelector('input');
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save && input.value !== current) {
+      await renamePwmGroup(chipIdx, gi, input.value);
+    }
+    render();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
 // --- Rendering ---
 function renderPwmSection() {
   const chips = state.pwm || [];
   if (chips.length === 0) return '';
 
   return chips.map(chip => {
-    const cards = chip.channels.map(c => {
+    const groupCards = (chip.groups || []).map(g => {
+      const on = g.level > 0;
+      const members = g.channels.length ? `ch ${g.channels.join('·')}` : 'no members';
+      const mixed = g.mixed ? '<span class="pwm-mixed" title="a member is off its weighted ratio">mixed</span>' : '';
+      return `<div class="relay-card pwm-card pwm-group-card ${on ? 'is-on' : ''}"
+                   data-pwm-chip="${chip.index}" data-pwm-group="${g.index}">
+        <div class="relay-top">
+          <div class="relay-indicator"></div>
+          <button class="relay-edit-btn" data-edit-group-chip="${chip.index}" data-edit-group-gi="${g.index}" title="Edit name">edit</button>
+          <span class="relay-num">${members}</span>
+        </div>
+        <div class="relay-name">${escHtml(g.name)}</div>
+        <div class="pwm-level"><span>${g.percent.toFixed(1)}%</span>${mixed}<span>${g.level}</span></div>
+        <input class="pwm-slider" type="range" min="0" max="${PWM_MAX}" step="1" value="${g.level}"
+               data-pwm-chip="${chip.index}" data-pwm-group="${g.index}"
+               aria-label="${escAttr(g.name)} master level">
+      </div>`;
+    }).join('');
+
+    const cards = groupCards + chip.channels.map(c => {
       const on = c.level > 0;
       return `<div class="relay-card pwm-card ${on ? 'is-on' : ''}"
                    data-pwm-chip="${chip.index}" data-pwm-ch="${c.ch}">
@@ -1287,7 +1404,9 @@ boardsEl.addEventListener('click', (e) => {
   const editBtn = e.target.closest('.relay-edit-btn');
   if (editBtn) {
     e.stopPropagation();
-    if (editBtn.dataset.editPwm != null) {
+    if (editBtn.dataset.editGroupChip != null) {
+      startEditPwmGroupName(parseInt(editBtn.dataset.editGroupChip), parseInt(editBtn.dataset.editGroupGi));
+    } else if (editBtn.dataset.editPwm != null) {
       startEditPwmName(parseInt(editBtn.dataset.editPwm), parseInt(editBtn.dataset.editPwmCh));
     } else if (editBtn.dataset.editGpio != null) {
       startEditGpioName(parseInt(editBtn.dataset.editGpio));
@@ -1365,18 +1484,26 @@ boardsEl.addEventListener('input', (e) => {
   const level = parseInt(s.value);
   const card = s.closest('.pwm-card');
   if (card) {
+    // dragging a master re-imposes the weighted ratio, so the mixed badge goes
     const lv = card.querySelector('.pwm-level');
     if (lv) lv.innerHTML = `<span>${(100 * level / PWM_MAX).toFixed(1)}%</span><span>${level}</span>`;
     card.classList.toggle('is-on', level > 0);
   }
-  pwmSend(parseInt(s.dataset.pwmChip), parseInt(s.dataset.pwmCh), level);
+  pwmSliderSend(s, level);
 });
+
+// A group slider carries data-pwm-group, a channel slider data-pwm-ch
+function pwmSliderSend(s, level) {
+  const chipIdx = parseInt(s.dataset.pwmChip);
+  return s.dataset.pwmGroup != null
+    ? pwmSendGroup(chipIdx, parseInt(s.dataset.pwmGroup), level)
+    : pwmSend(chipIdx, parseInt(s.dataset.pwmCh), level);
+}
 
 boardsEl.addEventListener('change', (e) => {
   const s = e.target.closest('.pwm-slider');
   if (s) {
-    pwmSend(parseInt(s.dataset.pwmChip), parseInt(s.dataset.pwmCh), parseInt(s.value))
-      .finally(() => { sliding = false; });
+    pwmSliderSend(s, parseInt(s.value)).finally(() => { sliding = false; });
     return;
   }
   const freq = e.target.closest('[data-pwm-freq]');

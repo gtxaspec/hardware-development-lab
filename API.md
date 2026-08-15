@@ -371,6 +371,64 @@ curl -s -X POST -H 'Content-Type: application/json' \
 Single I2C write to the ALL_LED registers, so all 16 channels go dark together
 regardless of the configured `size`.
 
+### Channel groups
+
+A group is a named set of channels on one chip driven by a single master
+level - e.g. the R, G and B legs of one strip acting as a single light, so you
+can dim the whole strip without touching the white strip on another channel.
+
+Members carry a **weight** (0-4095, default full) which is the level they sit
+at when the master is full. Equal weights mean the master just sets every
+member the same. Unequal weights make the master scale them proportionally,
+which is what holds a calibrated white point as an RGB strip dims.
+
+The master is **derived from the hardware**, not stored, referenced to the
+member with the largest weight. So a channel nudged on its own cannot leave a
+stale master behind, and dragging back up from zero still recovers the balance
+because the ratios live in the weights. When a member sits off its weighted
+ratio the group reports `"mixed": true`.
+
+Groups appear per chip in `GET /api/pwm`:
+
+```json
+"groups": [
+  {
+    "index": 0,
+    "name": "RGB Strip",
+    "channels": [1, 2, 3],
+    "weights": {"1": 4095, "2": 4095, "3": 4095},
+    "level": 2048,
+    "percent": 50.01,
+    "mixed": false
+  }
+]
+```
+
+```bash
+# create
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"chip":0,"name":"RGB Strip","channels":[1,2,3]}' \
+  http://your-pi:8080/api/pwm/groups
+
+# drive every member from one master
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"chip":0,"group":0,"level":2048}' \
+  http://your-pi:8080/api/pwm/group
+
+# rename, re-scope, or set weights (any subset of the three)
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"chip":0,"group":0,"name":"RGB Strip","channels":[1,2,3],
+       "weights":{"1":4095,"2":3200,"3":2600}}' \
+  http://your-pi:8080/api/pwm/group
+
+# delete
+curl -s -X DELETE http://your-pi:8080/api/pwm/groups/0/0
+```
+
+Setting a group responds with the exact member levels written:
+`{"chip":0,"group":0,"name":"RGB Strip","level":2048,"percent":50.01,
+"channels":{"1":2048,"2":2048,"3":2048}}`
+
 ### Set frequency
 
 ```bash

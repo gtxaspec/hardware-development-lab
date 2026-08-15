@@ -89,6 +89,71 @@ ck("explicit phase honoured",
    rp.pca_channel_cfg({"channels": {"2": {"name": "G", "phase": 1365}}}, 2),
    ("G", 1365))
 
+# --- channel groups --------------------------------------------------------
+RGB = {"size": 4, "groups": [{"name": "RGB Strip", "channels": [1, 2, 3]}]}
+
+ck("group defaults", rp.pca_group_cfg(RGB, 0),
+   ("RGB Strip", [1, 2, 3], {1: 4095, 2: 4095, 3: 4095}))
+ck("unnamed group gets an index name",
+   rp.pca_group_cfg({"size": 4, "groups": [{"channels": [0]}]}, 0)[0], "Group 0")
+ck("channels past the chip size are dropped",
+   rp.pca_group_cfg({"size": 4, "groups": [{"channels": [1, 2, 9, -1]}]}, 0)[1], [1, 2])
+ck("duplicate channels are deduped",
+   rp.pca_group_cfg({"size": 4, "groups": [{"channels": [1, 2, 1]}]}, 0)[1], [1, 2])
+ck("out-of-range group index is inert", rp.pca_group_cfg(RGB, 7)[1], [])
+
+_, chans, wts = rp.pca_group_cfg(RGB, 0)
+
+# equal weights: a group is plainly "set every member the same"
+ck("equal weights set members equal",
+   rp.group_levels_for(chans, wts, 2048), {1: 2048, 2: 2048, 3: 2048})
+ck("group master 0 blanks members",
+   rp.group_levels_for(chans, wts, 0), {1: 0, 2: 0, 3: 0})
+ck("group master clamps", rp.group_levels_for(chans, wts, 99999),
+   {1: 4095, 2: 4095, 3: 4095})
+
+# unequal weights hold a calibrated white point while the master dims
+CAL = {"size": 4, "groups": [{"name": "RGB", "channels": [1, 2, 3],
+                              "weights": {"1": 4095, "2": 2048, "3": 1024}}]}
+_, cchans, cwts = rp.pca_group_cfg(CAL, 0)
+ck("weighted group at full", rp.group_levels_for(cchans, cwts, 4095),
+   {1: 4095, 2: 2048, 3: 1024})
+ck("weighted group holds ratio at half", rp.group_levels_for(cchans, cwts, 2048),
+   {1: 2048, 2: 1024, 3: 512})
+
+# master is derived from hardware, never stored
+ck("master recovered from equal members",
+   rp.group_master_from(chans, wts, {1: 2048, 2: 2048, 3: 2048}), 2048)
+ck("master recovered from weighted members",
+   rp.group_master_from(cchans, cwts, {1: 2048, 2: 1024, 3: 512}), 2048)
+ck("all members dark -> master 0",
+   rp.group_master_from(chans, wts, {1: 0, 2: 0, 3: 0}), 0)
+# Reference is the heaviest member (ties -> first), not the brightest: a lone
+# channel raised by hand shows up as `mixed`, it does not drag the master.
+ck("master is referenced to the heaviest member",
+   rp.group_master_from(chans, wts, {1: 100, 2: 3000, 3: 0}), 100)
+ck("weighted group references its full-weight member",
+   rp.group_master_from(cchans, cwts, {1: 2048, 2: 4095, 3: 4095}), 2048)
+ck("zero-weight member cannot drive the master",
+   rp.group_master_from([1], {1: 0}, {1: 4095}), 0)
+
+bad = []
+for m in range(0, 4096, 7):
+    for cs, ws in ((chans, wts), (cchans, cwts)):
+        back = rp.group_master_from(cs, ws, rp.group_levels_for(cs, ws, m))
+        if abs(back - m) > 1:                     # 1 count of rounding slack
+            bad.append((m, back))
+ck("master -> levels -> master round-trips", bad[:3], [])
+
+# a member nudged off its ratio must surface as mixed, not silently skew the master
+g = rp.get_pwm_groups(RGB, {1: 2048, 2: 2048, 3: 2048})[0]
+ck("even group is not mixed", (g["level"], g["mixed"]), (2048, False))
+g = rp.get_pwm_groups(RGB, {1: 2048, 2: 2048, 3: 100})[0]
+ck("uneven group reports mixed", (g["level"], g["mixed"]), (2048, True))
+g = rp.get_pwm_groups(CAL, {1: 4095, 2: 2048, 3: 1024})[0]
+ck("calibrated ratio is not mixed", (g["level"], g["mixed"]), (4095, False))
+ck("no groups configured -> empty list", rp.get_pwm_groups({"size": 4}, {}), [])
+
 # --- request body parsing --------------------------------------------------
 ck("level passthrough", rp.resolve_level({"level": 2048}), 2048)
 ck("percent 50", rp.resolve_level({"percent": 50}), 2048)

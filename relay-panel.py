@@ -354,6 +354,88 @@ def pca_channel_cfg(chip, ch):
     return name, int(phase) & 0x0FFF
 
 
+def pca_group_cfg(chip, gi):
+    """Normalized (name, channels, weights) for one channel group."""
+    groups = chip.get("groups", [])
+    g = groups[gi] if 0 <= gi < len(groups) else {}
+    name = g.get("name") or f"Group {gi}"
+    size = chip.get("size", 16)
+    channels = []
+    for c in g.get("channels", []):
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= c < size and c not in channels:
+            channels.append(c)
+    raw = g.get("weights") or {}
+    weights = {}
+    for ch in channels:
+        try:
+            w = int(raw.get(str(ch), PWM_MAX))
+        except (TypeError, ValueError):
+            w = PWM_MAX
+        weights[ch] = max(0, min(PWM_MAX, w))
+    return name, channels, weights
+
+
+def group_levels_for(channels, weights, master):
+    """Member duties for a master level.
+
+    Weights all default to full, which makes a group plainly "set every member
+    to the same level". Setting them unequal instead holds a calibrated colour
+    balance while the master dims, which is what an RGB strip standing in for
+    white light needs.
+    """
+    master = max(0, min(PWM_MAX, int(master)))
+    return {ch: int(round(weights[ch] * master / PWM_MAX)) for ch in channels}
+
+
+def group_master_from(channels, weights, levels):
+    """Recover the master from the hardware, referenced to the heaviest member.
+
+    Derived rather than stored. A channel nudged on its own can never leave a
+    stale master behind, and dragging back up from zero still recovers the
+    balance because the ratios live in the weights, not in the last levels
+    written.
+
+    The heaviest member is the reference because scaling a small level back up
+    multiplies its rounding error by the inverse of its weight: a member at a
+    quarter weight turns half a count of quantisation into two counts of
+    master, which then reads back as a false "mixed".
+    """
+    ref, ref_w = None, 0
+    for ch in channels:
+        w = weights.get(ch, 0)
+        if w > ref_w:
+            ref, ref_w = ch, w
+    if ref is None or ref_w <= 0:
+        return 0
+    return min(PWM_MAX, int(round(levels.get(ref, 0) * PWM_MAX / ref_w)))
+
+
+def get_pwm_groups(chip, levels):
+    """Group state for a chip, derived from the channel levels just read."""
+    groups = []
+    for gi in range(len(chip.get("groups", []))):
+        name, channels, weights = pca_group_cfg(chip, gi)
+        master = group_master_from(channels, weights, levels)
+        expected = group_levels_for(channels, weights, master)
+        # A member off its weighted ratio means someone set a channel by hand;
+        # surfacing that beats silently showing a master that is not the truth.
+        mixed = any(abs(levels.get(ch, 0) - expected[ch]) > 1 for ch in channels)
+        groups.append({
+            "index": gi,
+            "name": name,
+            "channels": channels,
+            "weights": {str(k): v for k, v in weights.items()},
+            "level": master,
+            "percent": round(100.0 * master / PWM_MAX, 2),
+            "mixed": mixed,
+        })
+    return groups
+
+
 def get_pwm_state(config):
     """Live state of every configured PWM chip, read back from hardware."""
     result = []
@@ -378,6 +460,7 @@ def get_pwm_state(config):
                 "level": level,
                 "percent": round(100.0 * level / PWM_MAX, 2),
             })
+        levels = {c["ch"]: c["level"] for c in channels}
         result.append({
             "index": idx,
             "name": chip.get("name", f"PWM {idx}"),
@@ -387,6 +470,7 @@ def get_pwm_state(config):
             "prescale": prescale,
             "freq_hz": round(pca_freq_for(prescale), 1) if regs else 0,
             "channels": channels,
+            "groups": get_pwm_groups(chip, levels),
             "error": None if regs else f"no response at {addr} on bus {bus}",
         })
     return result
@@ -817,6 +901,65 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"ok": True, "chips": len(targets)})
 
+        elif path == "/api/pwm/group":
+            chip_idx = body.get("chip", 0)
+            gi = body.get("group", 0)
+            level = resolve_level(body)
+            if level is None:
+                self.send_json({"error": "level (0-4095) or percent (0-100) is required"}, 400)
+                return
+            config = load_config()
+            chips = config.get("pwm", [])
+            if chip_idx >= len(chips):
+                self.send_json({"error": "Invalid chip"}, 400)
+                return
+            chip = chips[chip_idx]
+            if not isinstance(gi, int) or gi >= len(chip.get("groups", [])):
+                self.send_json({"error": "Invalid group"}, 400)
+                return
+            gname, gch, gweights = pca_group_cfg(chip, gi)
+            targets = group_levels_for(gch, gweights, level)
+            try:
+                for ch, lvl in targets.items():
+                    _, phase = pca_channel_cfg(chip, ch)
+                    pca_set_channel(chip["bus"], chip["address"], ch, lvl, phase)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
+            self.send_json({
+                "chip": chip_idx,
+                "group": gi,
+                "name": gname,
+                "level": level,
+                "percent": round(100.0 * level / PWM_MAX, 2),
+                "channels": {str(k): v for k, v in targets.items()},
+            })
+
+        elif path == "/api/pwm/groups":
+            chip_idx = body.get("chip", 0)
+            name = body.get("name") or "Group"
+            channels = body.get("channels")
+            if not isinstance(channels, list) or not channels:
+                self.send_json({"error": "channels must be a non-empty list"}, 400)
+                return
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                size = chip.get("size", 16)
+                bad = [c for c in channels if not isinstance(c, int) or not 0 <= c < size]
+                if bad:
+                    self.send_json({"error": f"channels out of range for a {size}-channel chip: {bad}"}, 400)
+                    return
+                chip.setdefault("groups", []).append({
+                    "name": name,
+                    "channels": channels,
+                })
+                save_config(config)
+            self.send_json({"ok": True, "group": len(chip["groups"]) - 1})
+
         elif path == "/api/pwm/reset":
             chip_idx = body.get("chip", 0)
             config = load_config()
@@ -973,6 +1116,54 @@ class RelayHandler(BaseHTTPRequestHandler):
                 save_config(config)
             self.send_json({"ok": True})
 
+        elif path == "/api/pwm/group":
+            chip_idx = body.get("chip", 0)
+            gi = body.get("group", 0)
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                if not isinstance(gi, int) or gi >= len(chip.get("groups", [])):
+                    self.send_json({"error": "Invalid group"}, 400)
+                    return
+                group = chip["groups"][gi]
+                size = chip.get("size", 16)
+                if "name" in body:
+                    group["name"] = body["name"]
+                if "channels" in body:
+                    chans = body["channels"]
+                    if not isinstance(chans, list) or not chans:
+                        self.send_json({"error": "channels must be a non-empty list"}, 400)
+                        return
+                    bad = [c for c in chans if not isinstance(c, int) or not 0 <= c < size]
+                    if bad:
+                        self.send_json({"error": f"channels out of range: {bad}"}, 400)
+                        return
+                    group["channels"] = chans
+                if "weights" in body:
+                    weights = body["weights"]
+                    if not isinstance(weights, dict):
+                        self.send_json({"error": "weights must be an object keyed by channel"}, 400)
+                        return
+                    try:
+                        group["weights"] = {
+                            str(int(k)): max(0, min(PWM_MAX, int(v)))
+                            for k, v in weights.items()
+                        }
+                    except (TypeError, ValueError):
+                        self.send_json({"error": "weights must be integers 0-4095"}, 400)
+                        return
+                save_config(config)
+            name, chans, w = pca_group_cfg(chip, gi)
+            self.send_json({
+                "ok": True,
+                "name": name,
+                "channels": chans,
+                "weights": {str(k): v for k, v in w.items()},
+            })
+
         elif path == "/api/pwm/freq":
             chip_idx = body.get("chip", 0)
             try:
@@ -1113,6 +1304,27 @@ class RelayHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid board"}, 400)
                     return
                 config["boards"].pop(board_idx)
+                save_config(config)
+            self.send_json({"ok": True})
+        elif path.startswith("/api/pwm/groups/"):
+            # must be tested before the bare /api/pwm/<idx> case below, which
+            # would otherwise read the group index as a chip index
+            parts = path.split("/")
+            try:
+                chip_idx, gi = int(parts[-2]), int(parts[-1])
+            except (ValueError, IndexError):
+                self.send_json({"error": "expected /api/pwm/groups/<chip>/<group>"}, 400)
+                return
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                if gi >= len(chip.get("groups", [])):
+                    self.send_json({"error": "Invalid group"}, 400)
+                    return
+                chip["groups"].pop(gi)
                 save_config(config)
             self.send_json({"ok": True})
         elif path.startswith("/api/pwm/"):
