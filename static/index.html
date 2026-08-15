@@ -712,6 +712,12 @@ body.edit-mode .relay-edit-btn {
 body.edit-mode .gpio-remove-btn,
 body.edit-mode .pwm-remove-btn { display: block; }
 
+/* Structural controls inside a section: adding a channel or a group changes
+   the rig's shape the same way removing one does, so both live behind Edit.
+   The page-header + buttons stay out, they are the global toolbar. */
+.edit-only { display: none; }
+body.edit-mode .edit-only { display: block; }
+
 .gpio-card:has(.relay-name-input) .gpio-remove-btn { visibility: hidden; }
 .pwm-card:has(.relay-name-input) .pwm-remove-btn { visibility: hidden; }
 
@@ -1485,7 +1491,7 @@ function renderPwmSection() {
       return `<option value="${f}"${sel}>${f} Hz</option>`;
     }).join('');
 
-    const empty = '<div class="loading" style="min-height:80px;font-size:0.875rem">No channels configured — click + Ch to add one</div>';
+    const empty = '<div class="loading" style="min-height:80px;font-size:0.875rem">No channels configured — turn on Edit, then + Ch</div>';
 
     return `<div class="board-section pwm-section" data-pwm-idx="${chip.index}">
       <div class="board-header">
@@ -1494,8 +1500,8 @@ function renderPwmSection() {
         ${chip.error ? `<span class="board-error">${escHtml(chip.error)}</span>` : ''}
         <div class="board-actions">
           <select class="pwm-freq" data-pwm-freq="${chip.index}" title="PWM frequency (applies to all 16 channels)">${opts}</select>
-          <button class="btn-surface btn-sm" data-pwm-addch="${chip.index}" title="Add a channel"${(chip.available || []).length ? '' : ' disabled'}>+ Ch</button>
-          <button class="btn-surface btn-sm" data-pwm-addgroup="${chip.index}" title="Drive several channels from one master">+ Group</button>
+          <button class="btn-surface btn-sm edit-only" data-pwm-addch="${chip.index}" title="Add a channel"${(chip.available || []).length ? '' : ' disabled'}>+ Ch</button>
+          <button class="btn-surface btn-sm edit-only" data-pwm-addgroup="${chip.index}" title="Drive several channels from one master">+ Group</button>
           <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="${PWM_MAX}">All On</button>
           <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="0">All Off</button>
           ${editMode ? `<button class="btn-danger btn-sm" data-pwm-remove="${chip.index}">Remove</button>` : ''}
@@ -1541,7 +1547,7 @@ function renderGpiosSection() {
       <span class="board-name">GPIOs</span>
       <span class="board-addr">wiringOP · ${gpios.length} pin${gpios.length === 1 ? '' : 's'}</span>
       <div class="board-actions">
-        <button class="btn-surface btn-sm" onclick="addGpioModal()">+ GPIO</button>
+        <button class="btn-surface btn-sm edit-only" onclick="addGpioModal()">+ GPIO</button>
       </div>
     </div>
     ${cards ? `<div class="relay-grid">${cards}</div>` : empty}
