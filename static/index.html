@@ -1733,11 +1733,22 @@ function escAttr(s) {
 }
 
 // --- Polling ---
+// render() replaces boardsEl wholesale, which destroys whatever node the user
+// is currently interacting with. An open <select> popup is anchored to its
+// element, so a poll landing mid-click closes the menu instantly. Holding off
+// while a control inside the panel has focus is self-correcting: clicking or
+// tabbing away blurs it and polling resumes on the next tick.
+function uiHoldsFocus() {
+  const a = document.activeElement;
+  if (!a || !boardsEl.contains(a)) return false;
+  return a.tagName === 'SELECT' || a.classList.contains('pwm-slider');
+}
+
 function startPolling() {
   // Poll every 3 seconds for state changes (e.g. from other clients)
   const dot = document.getElementById('pollDot');
   pollTimer = setInterval(async () => {
-    if (editing || sliding) return;
+    if (editing || sliding || uiHoldsFocus()) return;
     dot.classList.add('active');
     try {
       const newState = await api('GET', '/api/state');
