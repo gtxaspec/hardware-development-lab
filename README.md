@@ -69,7 +69,6 @@ GPIO pins, so the whole bench is three wires from the SBC.
 | 12 V PSU | LED strips | Sized for total strip current |
 | 5 V / 12 V PSUs | Devices under test | Switched by the relay boards |
 | 12 V LED strips | The light source | White for luma work, RGB for colour |
-| 10 kΩ resistors | Gate pulldowns | One per MOSFET module, see below |
 
 ### Wiring notes
 
@@ -77,10 +76,18 @@ GPIO pins, so the whole bench is three wires from the SBC.
 both PSUs. The MOSFET switches the low side, so its gate reference and the PWM
 reference have to be the same node or nothing works predictably.
 
-**10 kΩ pulldown from each MOSFET module's signal input to GND.** The PCA9685's
-outputs are undriven until it is configured, so without this the gates float
-during boot and the strips flash on. Firmware cannot fix a state that exists
-before firmware runs.
+**No gate pulldowns needed with a PCA9685.** In its default totem-pole mode
+(`MODE2` `OUTDRV=1`) it actively drives both rails rather than floating, the
+`LEDn` registers come out of power-on reset set to `FULL_OFF`, and with
+`OUTNE=00` the outputs sit LOW even while `/OE` is high. The gates are held down
+from reset onwards, and this bench runs without external pulldowns.
+
+Add a 10 kΩ pulldown per gate only if that stops being true: `OUTDRV=0`
+(open-drain), `OUTNE=10` (outputs high-impedance when disabled), or driving the
+modules from a microcontroller whose pins are inputs until firmware configures
+them — that last one is a real window of hundreds of milliseconds during which
+the strips will flash on, and firmware cannot fix a state that exists before
+firmware runs.
 
 **Leave the PCA9685's `V+` pin unconnected.** It only matters if you drive LEDs
 from the chip directly. Driving MOSFET gates, the logic supply is all it needs.
@@ -317,10 +324,8 @@ proportionally, holding a calibrated white point while dimming. The master is
 derived from the hardware, never stored, so a channel nudged on its own shows up
 as `mixed` instead of leaving a stale master behind.
 
-**Wire a 10 kΩ pulldown on each MOSFET module's signal input.** The PCA9685's
-outputs are undriven until it is configured, and without the pulldown the gates
-float during boot and the strips flash on. Firmware cannot fix a state that
-exists before firmware runs.
+The PCA9685 needs no external gate pulldowns in its default totem-pole mode —
+see [Wiring notes](#wiring-notes) for when that stops being true.
 
 ## Safety rails
 
@@ -398,6 +403,15 @@ exposed as tools. That is physical setup, done in the web UI.
 ## API
 
 See [API.md](API.md).
+
+## Prior art
+
+The relay layer began as [xl9535-relay-controller][x], a bash script driving the
+same four registers — direction at `0x06`/`0x07`, output at `0x02`/`0x03` — and
+was reimplemented here in Python. That script is not a dependency; nothing in
+this project shells out to it.
+
+[x]: https://github.com/gtxaspec/xl9535-relay-controller
 
 ## License
 
