@@ -14,7 +14,11 @@ mcp = FastMCP(
         "GPIOs are individual wiringPi-numbered pins used for direct HI/LOW control "
         "(e.g. driving a USB switch from pin 40 / wPi 27). "
         "Both can be toggled, set on/off, listed, added, removed, and renamed. "
-        "State is always 'on' or 'off'."
+        "State is always 'on' or 'off'. "
+        "PWM channels are separate: a PCA9685 drives dimmable 12 V LED strips "
+        "through MOSFET modules for camera day/night testing. Those are "
+        "continuous, addressed by chip index + channel, and set with a level "
+        "(0-4095) or a percent (0-100), not on/off."
     ),
 )
 
@@ -209,6 +213,106 @@ def rename_gpio(wpi: int, name: str) -> dict:
         name: New display name
     """
     return api("PUT", "/api/gpio/name", {"wpi": wpi, "name": name})
+
+
+@mcp.tool()
+def list_leds() -> dict:
+    """List PWM (LED dimming) chips and their channels with live levels.
+
+    Each chip has an index, I2C address/bus, the PWM frequency it is actually
+    producing, and its PRE_SCALE divider. Each channel has a number, name,
+    stagger phase, level in counts (0-4095) and percent. Levels are read back
+    from the chip, not cached.
+    """
+    return api("GET", "/api/pwm")
+
+
+@mcp.tool()
+def set_led(chip: int, channel: int, level: int | None = None,
+            percent: float | None = None) -> dict:
+    """Set one PWM channel's brightness.
+
+    Give either level or percent. Level is the raw 12-bit duty and is what to
+    use for repeatable test steps; percent is a convenience that rounds to the
+    nearest count.
+
+    Args:
+        chip: PWM chip index (0-based)
+        channel: Channel number on that chip
+        level: Duty in counts, 0-4095
+        percent: Duty as a percentage, 0-100
+    """
+    body: dict = {"chip": chip, "channel": channel}
+    if level is not None:
+        body["level"] = level
+    elif percent is not None:
+        body["percent"] = percent
+    else:
+        return {"error": "level or percent is required"}
+    return api("POST", "/api/pwm/set", body)
+
+
+@mcp.tool()
+def set_all_leds(chip: int, level: int | None = None,
+                 percent: float | None = None) -> dict:
+    """Set every channel on a PWM chip to the same brightness.
+
+    Args:
+        chip: PWM chip index (0-based)
+        level: Duty in counts, 0-4095
+        percent: Duty as a percentage, 0-100
+    """
+    body: dict = {"chip": chip}
+    if level is not None:
+        body["level"] = level
+    elif percent is not None:
+        body["percent"] = percent
+    else:
+        return {"error": "level or percent is required"}
+    return api("POST", "/api/pwm/all", body)
+
+
+@mcp.tool()
+def leds_off(chip: int | None = None) -> dict:
+    """Force PWM channels dark in a single I2C write.
+
+    Args:
+        chip: PWM chip index, or omit to blank every configured chip
+    """
+    return api("POST", "/api/pwm/off", {} if chip is None else {"chip": chip})
+
+
+@mcp.tool()
+def set_led_freq(chip: int, freq_hz: float) -> dict:
+    """Set a PWM chip's frequency. Applies to all 16 channels.
+
+    The PCA9685 divides a 25 MHz oscillator by an integer, so the achievable
+    range is 24 Hz to 1526 Hz and the steps are uneven - the response reports
+    the frequency actually produced, which is what a test log should record.
+    Low frequencies are useful on purpose: they make rolling-shutter banding
+    appear so a rig can prove it can produce the artifact, not just avoid it.
+
+    Args:
+        chip: PWM chip index (0-based)
+        freq_hz: Requested frequency in Hz
+    """
+    return api("PUT", "/api/pwm/freq", {"chip": chip, "freq_hz": freq_hz})
+
+
+@mcp.tool()
+def rename_led_channel(chip: int, channel: int, name: str) -> dict:
+    """Rename a PWM channel.
+
+    Args:
+        chip: PWM chip index (0-based)
+        channel: Channel number
+        name: New display name
+    """
+    return api("PUT", "/api/pwm/name", {
+        "chip": chip,
+        "channel": channel,
+        "name": name,
+    })
 
 
 if __name__ == "__main__":

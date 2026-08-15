@@ -418,6 +418,72 @@ body.edit-mode .board-addr { cursor: pointer; }
   color: var(--on);
 }
 
+/* --- PWM / LED dimming --- */
+.pwm-card {
+  cursor: default;
+  gap: 0.375rem;
+}
+
+.pwm-level {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text-muted);
+}
+
+.pwm-card.is-on .pwm-level { color: var(--on); }
+
+.pwm-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 0.25rem 0 0;
+  border-radius: 2px;
+  background: var(--surface-active);
+  outline: none;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.pwm-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--off);
+  border: 2px solid var(--bg);
+  cursor: pointer;
+}
+
+.pwm-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--off);
+  border: 2px solid var(--bg);
+  cursor: pointer;
+}
+
+.pwm-card.is-on .pwm-slider::-webkit-slider-thumb { background: var(--on); }
+.pwm-card.is-on .pwm-slider::-moz-range-thumb { background: var(--on); }
+
+.pwm-slider:focus-visible { box-shadow: 0 0 0 3px var(--focus-ring); }
+
+.pwm-freq {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.25rem 0.35rem;
+  cursor: pointer;
+}
+
 /* Keyboard hint */
 .keyboard-hint {
   position: fixed;
@@ -746,12 +812,13 @@ body.edit-mode .board-name { cursor: pointer; }
 
 <script>
 const boardsEl = document.getElementById('boards');
-let state = { boards: [], gpios: [] };
+let state = { boards: [], gpios: [], pwm: [] };
 let focusedBoard = 0;
 let focusedRelay = 0;
 let editing = false;
 let editMode = false;
 let pollTimer = null;
+let sliding = false;   // a PWM slider is being dragged; hold off the re-render
 
 function toggleEditMode() {
   editMode = !editMode;
@@ -919,7 +986,129 @@ async function addBoard() {
   }
 }
 
+// --- PWM (LED dimming) ---
+const PWM_MAX = 4095;
+const PWM_FREQS = [24, 50, 100, 200, 400, 800, 1526];
+
+// Mirrors pca_prescale_for() on the server so the dropdown can mark the option
+// that actually corresponds to the chip's current divider. Comparing achieved
+// frequencies instead would need a tolerance, and the steps are uneven.
+function pwmPrescaleFor(hz) {
+  return Math.max(3, Math.min(255, Math.round(25e6 / (4096 * hz)) - 1));
+}
+
+// One request in flight per channel, latest value wins. Dragging a slider
+// emits far more input events than the I2C write can absorb, and without this
+// they arrive out of order and the strip settles on a stale level.
+const pwmInflight = new Map();
+
+async function pwmSend(chipIdx, ch, level) {
+  const key = `${chipIdx}:${ch}`;
+  if (pwmInflight.has(key)) { pwmInflight.set(key, level); return; }
+  pwmInflight.set(key, level);
+  while (pwmInflight.has(key)) {
+    const v = pwmInflight.get(key);
+    const data = await api('POST', '/api/pwm/set', { chip: chipIdx, channel: ch, level: v });
+    if (data && data.error) { toast(data.error); pwmInflight.delete(key); return; }
+    const chip = (state.pwm || [])[chipIdx];
+    const c = chip && chip.channels.find(x => x.ch === ch);
+    if (c) { c.level = data.level; c.percent = data.percent; }
+    if (pwmInflight.get(key) === v) pwmInflight.delete(key);
+  }
+}
+
+async function pwmSetAll(chipIdx, level) {
+  const data = await api('POST', '/api/pwm/all', { chip: chipIdx, level });
+  if (data && data.error) { toast(data.error); return; }
+  await fetchState();
+}
+
+async function setPwmFreq(chipIdx, hz) {
+  const data = await api('PUT', '/api/pwm/freq', { chip: chipIdx, freq_hz: hz });
+  if (data && data.error) { toast(data.error); return; }
+  await fetchState();
+  toast(`${data.freq_hz} Hz (PRE_SCALE ${data.prescale})`);
+}
+
+async function renamePwmChannel(chipIdx, ch, name) {
+  await api('PUT', '/api/pwm/name', { chip: chipIdx, channel: ch, name });
+  await fetchState();
+}
+
+function startEditPwmName(chipIdx, ch) {
+  editing = true;
+  const chip = (state.pwm || [])[chipIdx];
+  const c = chip && chip.channels.find(x => x.ch === ch);
+  if (!c) { editing = false; return; }
+  const card = boardsEl.querySelector(`.pwm-card[data-pwm-chip="${chipIdx}"][data-pwm-ch="${ch}"]`);
+  if (!card) { editing = false; return; }
+  const nameEl = card.querySelector('.relay-name');
+  const current = c.name;
+  nameEl.innerHTML = `<input class="relay-name-input" type="text" value="${escAttr(current)}">`;
+  const input = nameEl.querySelector('input');
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save && input.value !== current) {
+      await renamePwmChannel(chipIdx, ch, input.value);
+    }
+    render();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
 // --- Rendering ---
+function renderPwmSection() {
+  const chips = state.pwm || [];
+  if (chips.length === 0) return '';
+
+  return chips.map(chip => {
+    const cards = chip.channels.map(c => {
+      const on = c.level > 0;
+      return `<div class="relay-card pwm-card ${on ? 'is-on' : ''}"
+                   data-pwm-chip="${chip.index}" data-pwm-ch="${c.ch}">
+        <div class="relay-top">
+          <div class="relay-indicator"></div>
+          <button class="relay-edit-btn" data-edit-pwm="${chip.index}" data-edit-pwm-ch="${c.ch}" title="Edit name">edit</button>
+          <span class="relay-num">#${c.ch} · &phi;${c.phase}</span>
+        </div>
+        <div class="relay-name">${escHtml(c.name)}</div>
+        <div class="pwm-level"><span>${c.percent.toFixed(1)}%</span><span>${c.level}</span></div>
+        <input class="pwm-slider" type="range" min="0" max="${PWM_MAX}" step="1" value="${c.level}"
+               data-pwm-chip="${chip.index}" data-pwm-ch="${c.ch}"
+               aria-label="${escAttr(c.name)} level">
+      </div>`;
+    }).join('');
+
+    const opts = PWM_FREQS.map(f => {
+      const sel = pwmPrescaleFor(f) === chip.prescale ? ' selected' : '';
+      return `<option value="${f}"${sel}>${f} Hz</option>`;
+    }).join('');
+
+    return `<div class="board-section pwm-section" data-pwm-idx="${chip.index}">
+      <div class="board-header">
+        <span class="board-name">${escHtml(chip.name)}</span>
+        <span class="board-addr">${chip.address} bus:${chip.bus} · ${chip.freq_hz} Hz (PRE_SCALE ${chip.prescale})</span>
+        ${chip.error ? `<span class="board-error">${escHtml(chip.error)}</span>` : ''}
+        <div class="board-actions">
+          <select class="pwm-freq" data-pwm-freq="${chip.index}" title="PWM frequency (applies to all 16 channels)">${opts}</select>
+          <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="${PWM_MAX}">All On</button>
+          <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="0">All Off</button>
+        </div>
+      </div>
+      <div class="relay-grid">${cards}</div>
+    </div>`;
+  }).join('');
+}
+
 function renderGpiosSection() {
   const gpios = state.gpios || [];
   if (gpios.length === 0 && !editMode) return '';
@@ -994,8 +1183,9 @@ function renderUsbSection() {
 function render() {
   const noBoards = !state.boards || state.boards.length === 0;
   const noGpios = !state.gpios || state.gpios.length === 0;
-  if (noBoards && noGpios) {
-    boardsEl.innerHTML = '<div class="loading">No boards or GPIOs configured</div>' + renderUsbSection();
+  const noPwm = !state.pwm || state.pwm.length === 0;
+  if (noBoards && noGpios && noPwm) {
+    boardsEl.innerHTML = '<div class="loading">No boards, GPIOs or PWM configured</div>' + renderUsbSection();
     return;
   }
 
@@ -1061,7 +1251,7 @@ function render() {
     </div>`;
   }).join('');
 
-  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderUsbSection();
+  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection() + renderUsbSection();
 
   // Restore focus
   const focusedCard = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
@@ -1078,6 +1268,13 @@ boardsEl.addEventListener('click', (e) => {
   // USB device cards are read-only
   if (e.target.closest('.usb-card')) return;
 
+  // PWM All On / All Off
+  const pwmAllBtn = e.target.closest('[data-pwm-all]');
+  if (pwmAllBtn) {
+    pwmSetAll(parseInt(pwmAllBtn.dataset.pwmAll), parseInt(pwmAllBtn.dataset.pwmLevel));
+    return;
+  }
+
   // GPIO remove button
   const gpioRemoveBtn = e.target.closest('.gpio-remove-btn');
   if (gpioRemoveBtn) {
@@ -1090,7 +1287,9 @@ boardsEl.addEventListener('click', (e) => {
   const editBtn = e.target.closest('.relay-edit-btn');
   if (editBtn) {
     e.stopPropagation();
-    if (editBtn.dataset.editGpio != null) {
+    if (editBtn.dataset.editPwm != null) {
+      startEditPwmName(parseInt(editBtn.dataset.editPwm), parseInt(editBtn.dataset.editPwmCh));
+    } else if (editBtn.dataset.editGpio != null) {
       startEditGpioName(parseInt(editBtn.dataset.editGpio));
     } else {
       const bi = parseInt(editBtn.dataset.editBoard);
@@ -1111,6 +1310,11 @@ boardsEl.addEventListener('click', (e) => {
     }
     return;
   }
+
+  // PWM cards carry .relay-card for styling but are driven by their slider,
+  // not by clicking the card - fall through here or the relay branch below
+  // reads a NaN board index off them.
+  if (e.target.closest('.pwm-card')) return;
 
   const card = e.target.closest('.relay-card');
   if (card) {
@@ -1149,6 +1353,40 @@ boardsEl.addEventListener('dblclick', (e) => {
     startEditRelayName(bi, ri);
   }
 });
+
+// PWM sliders: paint the readout locally on every input event and let pwmSend
+// coalesce the writes. The 1 Hz poll rewrites boardsEl wholesale, which would
+// tear the slider out from under the drag, so `sliding` holds it off until the
+// pointer is released.
+boardsEl.addEventListener('input', (e) => {
+  const s = e.target.closest('.pwm-slider');
+  if (!s) return;
+  sliding = true;
+  const level = parseInt(s.value);
+  const card = s.closest('.pwm-card');
+  if (card) {
+    const lv = card.querySelector('.pwm-level');
+    if (lv) lv.innerHTML = `<span>${(100 * level / PWM_MAX).toFixed(1)}%</span><span>${level}</span>`;
+    card.classList.toggle('is-on', level > 0);
+  }
+  pwmSend(parseInt(s.dataset.pwmChip), parseInt(s.dataset.pwmCh), level);
+});
+
+boardsEl.addEventListener('change', (e) => {
+  const s = e.target.closest('.pwm-slider');
+  if (s) {
+    pwmSend(parseInt(s.dataset.pwmChip), parseInt(s.dataset.pwmCh), parseInt(s.value))
+      .finally(() => { sliding = false; });
+    return;
+  }
+  const freq = e.target.closest('[data-pwm-freq]');
+  if (freq) setPwmFreq(parseInt(freq.dataset.pwmFreq), parseFloat(freq.value));
+});
+
+// Belt and braces: a drag that ends outside the slider (or is cancelled) never
+// fires `change`, and a stuck `sliding` would freeze the whole panel's polling.
+document.addEventListener('pointerup', () => { sliding = false; });
+document.addEventListener('pointercancel', () => { sliding = false; });
 
 document.addEventListener('keydown', (e) => {
   if (editing) return;
@@ -1499,7 +1737,7 @@ function startPolling() {
   // Poll every 3 seconds for state changes (e.g. from other clients)
   const dot = document.getElementById('pollDot');
   pollTimer = setInterval(async () => {
-    if (editing) return;
+    if (editing || sliding) return;
     dot.classList.add('active');
     try {
       const newState = await api('GET', '/api/state');
