@@ -89,6 +89,44 @@ ck("explicit phase honoured",
    rp.pca_channel_cfg({"channels": {"2": {"name": "G", "phase": 1365}}}, 2),
    ("G", 1365))
 
+# --- which channels a chip manages -----------------------------------------
+ck("legacy size-only config expands to a contiguous range",
+   rp.pca_enabled_channels({"size": 4}), [0, 1, 2, 3])
+ck("channel map wins over size",
+   rp.pca_enabled_channels({"size": 16, "channels": {"0": {}, "3": {}}}), [0, 3])
+ck("channels need not be contiguous",
+   rp.pca_enabled_channels({"channels": {"7": {}, "0": {}, "15": {}}}), [0, 7, 15])
+ck("out-of-range channel keys are dropped",
+   rp.pca_enabled_channels({"channels": {"0": {}, "16": {}, "-1": {}}}), [0])
+ck("non-numeric channel keys are ignored",
+   rp.pca_enabled_channels({"channels": {"0": {}, "eight": {}}}), [0])
+ck("no size and no channels -> all 16",
+   rp.pca_enabled_channels({}), list(range(16)))
+ck("empty channel map falls back to size",
+   rp.pca_enabled_channels({"size": 2, "channels": {}}), [0, 1])
+
+legacy = {"size": 3}
+mat = rp.pca_materialize_channels(legacy)
+ck("materialize expands size into a map", sorted(mat), ["0", "1", "2"])
+ck("materialize drops the now-vestigial size", "size" in legacy, False)
+keep = {"channels": {"5": {"name": "IR"}}}
+rp.pca_materialize_channels(keep)
+ck("materialize leaves an existing map alone", keep["channels"], {"5": {"name": "IR"}})
+
+# --- I2C address conflicts -------------------------------------------------
+CFG = {
+    "boards": [{"address": "0x20", "bus": 2, "name": "Main Power"}],
+    "pwm": [{"address": "0x40", "bus": 2, "name": "LED Strips"}],
+}
+ck("free address is free", rp.i2c_address_conflict(CFG, 2, "0x41"), None)
+ck("same address on another bus is free", rp.i2c_address_conflict(CFG, 3, "0x40"), None)
+ck("relay board address is refused",
+   "Main Power" in (rp.i2c_address_conflict(CFG, 2, "0x20") or ""), True)
+ck("another PWM chip's address is refused",
+   "LED Strips" in (rp.i2c_address_conflict(CFG, 2, "0x40") or ""), True)
+ck("a chip does not conflict with itself",
+   rp.i2c_address_conflict(CFG, 2, "0x40", skip_pwm=0), None)
+
 # --- channel groups --------------------------------------------------------
 RGB = {"size": 4, "groups": [{"name": "RGB Strip", "channels": [1, 2, 3]}]}
 
@@ -101,6 +139,11 @@ ck("channels past the chip size are dropped",
 ck("duplicate channels are deduped",
    rp.pca_group_cfg({"size": 4, "groups": [{"channels": [1, 2, 1]}]}, 0)[1], [1, 2])
 ck("out-of-range group index is inert", rp.pca_group_cfg(RGB, 7)[1], [])
+# a group can only cover channels the chip still manages, so removing a
+# channel cannot leave a group pointing at one that is gone
+ck("group members outside the managed set are dropped",
+   rp.pca_group_cfg({"channels": {"1": {}, "3": {}},
+                     "groups": [{"channels": [1, 2, 3]}]}, 0)[1], [1, 3])
 
 _, chans, wts = rp.pca_group_cfg(RGB, 0)
 
@@ -182,8 +225,14 @@ ck("ch2 decodes as off", rp.pca_level(regs[0x0E:0x12]), 0)
 rp.i2c_cmd = lambda *a, **k: ("", 1)
 ck("failed dump returns None", rp.pca_dump(2, "0x40"), None)
 
+# An absent chip: i2cdump exits 0 and prints a full page of XX, so the parse
+# coming back empty is the only signal that nothing answered.
 rp.i2c_cmd = lambda *a, **k: ("00: XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX XX", 0)
-ck("unreadable registers do not crash the parser", rp.pca_dump(2, "0x40")[0], 0)
+ck("an all-XX dump reads as absent", rp.pca_dump(2, "0x41"), None)
+
+rp.i2c_cmd = lambda *a, **k: ("00: 20 XX 04 XX XX XX XX XX XX XX XX XX XX XX XX XX", 0)
+part = rp.pca_dump(2, "0x40")
+ck("a partly-unreadable chip still parses", (part[0x00], part[0x02]), (0x20, 0x04))
 rp.i2c_cmd = saved
 
 print()

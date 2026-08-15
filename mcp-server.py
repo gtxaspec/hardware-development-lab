@@ -283,6 +283,49 @@ def leds_off(chip: int | None = None) -> dict:
 
 
 @mcp.tool()
+def add_led_channel(chip: int, channel: int, name: str = "") -> dict:
+    """Bring one of the chip's 16 channels under management.
+
+    Channels need not be contiguous - a rig can manage 0-3 for two strips and
+    then 7 for an IR bank. A newly added channel starts dark.
+
+    Args:
+        chip: PWM chip index (0-based)
+        channel: Channel number on the chip, 0-15
+        name: Optional display name, e.g. "IR 850nm"
+    """
+    body: dict = {"chip": chip, "channel": channel}
+    if name:
+        body["name"] = name
+    return api("POST", "/api/pwm/channels", body)
+
+
+@mcp.tool()
+def remove_led_channel(chip: int, channel: int) -> dict:
+    """Stop managing a channel. It is blanked and dropped from any group.
+
+    A group left with no members is removed too; the response lists any that
+    went in `groups_dropped`.
+
+    Args:
+        chip: PWM chip index (0-based)
+        channel: Channel number to remove
+    """
+    return api("DELETE", f"/api/pwm/channels/{chip}/{channel}")
+
+
+@mcp.tool()
+def remove_led_group(chip: int, group: int) -> dict:
+    """Delete a channel group. Its member channels keep their current levels.
+
+    Args:
+        chip: PWM chip index (0-based)
+        group: Group index within that chip
+    """
+    return api("DELETE", f"/api/pwm/groups/{chip}/{group}")
+
+
+@mcp.tool()
 def set_led_group(chip: int, group: int, level: int | None = None,
                   percent: float | None = None) -> dict:
     """Set a whole group of PWM channels from one master level.

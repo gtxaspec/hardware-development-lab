@@ -497,6 +497,41 @@ body.edit-mode .board-addr { cursor: pointer; }
   letter-spacing: 0.06em;
 }
 
+.pwm-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+}
+
+.pwm-picker label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pwm-picker label:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pwm-picker input { margin: 0; cursor: pointer; }
+
+.pwm-picker-empty {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin-bottom: 0.75rem;
+}
+
 .pwm-freq {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.75rem;
@@ -656,7 +691,8 @@ body.edit-mode .relay-edit-btn {
   margin-left: auto;
 }
 
-.gpio-remove-btn {
+.gpio-remove-btn,
+.pwm-remove-btn {
   display: none;
   position: absolute;
   top: 4px;
@@ -671,10 +707,13 @@ body.edit-mode .relay-edit-btn {
   cursor: pointer;
   z-index: 1;
 }
-.gpio-remove-btn:hover { background: var(--danger); color: white; }
-body.edit-mode .gpio-remove-btn { display: block; }
+.gpio-remove-btn:hover,
+.pwm-remove-btn:hover { background: var(--danger); color: white; }
+body.edit-mode .gpio-remove-btn,
+body.edit-mode .pwm-remove-btn { display: block; }
 
 .gpio-card:has(.relay-name-input) .gpio-remove-btn { visibility: hidden; }
+.pwm-card:has(.relay-name-input) .pwm-remove-btn { visibility: hidden; }
 
 /* USB device section */
 .usb-section { flex-basis: 100%; }
@@ -779,6 +818,7 @@ body.edit-mode .board-name { cursor: pointer; }
     <button class="btn-edit-mode btn-sm" id="editModeBtn" onclick="toggleEditMode()" title="Toggle edit mode">Edit</button>
     <button class="btn-surface btn-sm" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
     <button class="btn-surface btn-sm" onclick="addGpioModal()" title="Add GPIO pin">+ GPIO</button>
+    <button class="btn-surface btn-sm" onclick="addPwmModal()" title="Add PCA9685 PWM chip">+ PWM</button>
   </div>
 </div>
 
@@ -828,6 +868,59 @@ body.edit-mode .board-name { cursor: pointer; }
     <div class="modal-actions">
       <button class="btn-surface" onclick="closeGpioModal()">Cancel</button>
       <button class="btn-accent" onclick="addGpio()">Add GPIO</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addPwmModal">
+  <div class="modal">
+    <h2>Add PWM Chip</h2>
+    <label for="pwmName">Name</label>
+    <input type="text" id="pwmName" value="LED PWM" placeholder="e.g. LED Strips">
+    <label for="pwmAddr">I2C Address</label>
+    <input type="text" id="pwmAddr" value="0x40" placeholder="0x40-0x7f">
+    <label for="pwmBus">I2C Bus</label>
+    <input type="number" id="pwmBus" value="2" min="0" max="10">
+    <label for="pwmSize">Channels to start with</label>
+    <select id="pwmSize">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="8">8</option>
+      <option value="16">16</option>
+    </select>
+    <div class="modal-actions">
+      <button class="btn-surface" onclick="closePwmModal()">Cancel</button>
+      <button class="btn-accent" onclick="addPwmChip()">Add Chip</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addPwmChannelModal">
+  <div class="modal">
+    <h2>Add Channel</h2>
+    <label for="pwmChSel">Channel</label>
+    <select id="pwmChSel"></select>
+    <label for="pwmChName">Name</label>
+    <input type="text" id="pwmChName" placeholder="e.g. IR 850nm">
+    <div class="modal-actions">
+      <button class="btn-surface" onclick="closePwmChannelModal()">Cancel</button>
+      <button class="btn-accent" onclick="addPwmChannel()">Add Channel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="pwmGroupModal">
+  <div class="modal">
+    <h2 id="pwmGroupTitle">Add Group</h2>
+    <label for="pwmGroupName">Name</label>
+    <input type="text" id="pwmGroupName" placeholder="e.g. RGB Strip">
+    <label>Channels driven together</label>
+    <div class="pwm-picker" id="pwmGroupPicker"></div>
+    <div class="modal-actions">
+      <button class="btn-surface" onclick="closePwmGroupModal()">Cancel</button>
+      <button class="btn-accent" onclick="savePwmGroup()">Save Group</button>
     </div>
   </div>
 </div>
@@ -1128,29 +1221,110 @@ function startEditPwmName(chipIdx, ch) {
   input.addEventListener('blur', () => finish(true));
 }
 
-async function renamePwmGroup(chipIdx, gi, name) {
-  await api('PUT', '/api/pwm/group', { chip: chipIdx, group: gi, name });
-  await fetchState();
+// --- PWM chips: add / remove / re-address ---
+function addPwmModal() {
+  document.getElementById('addPwmModal').classList.add('open');
+  document.getElementById('pwmName').focus();
 }
 
-function startEditPwmGroupName(chipIdx, gi) {
+function closePwmModal() {
+  document.getElementById('addPwmModal').classList.remove('open');
+}
+
+async function addPwmChip() {
+  const body = {
+    name: document.getElementById('pwmName').value || 'LED PWM',
+    address: document.getElementById('pwmAddr').value || '0x40',
+    bus: parseInt(document.getElementById('pwmBus').value) || 2,
+    size: parseInt(document.getElementById('pwmSize').value) || 4,
+  };
+  const r = await api('POST', '/api/pwm', body);
+  if (r.error) { toast(r.error); return; }
+  closePwmModal();
+  await fetchState();
+  toast(`Added PWM chip at ${body.address}`);
+}
+
+async function deletePwmChip(chipIdx) {
+  const chip = (state.pwm || [])[chipIdx];
+  if (!confirm(`Remove PWM chip "${chip ? chip.name : chipIdx}"? Its channels go dark.`)) return;
+  const r = await api('DELETE', `/api/pwm/${chipIdx}`);
+  if (r.error) { toast(r.error); return; }
+  await fetchState();
+  toast('PWM chip removed');
+}
+
+function startEditPwmSettings(chipIdx) {
   editing = true;
   const chip = (state.pwm || [])[chipIdx];
-  const g = chip && (chip.groups || []).find(x => x.index === gi);
-  if (!g) { editing = false; return; }
-  const card = boardsEl.querySelector(`.pwm-group-card[data-pwm-chip="${chipIdx}"][data-pwm-group="${gi}"]`);
-  if (!card) { editing = false; return; }
-  const nameEl = card.querySelector('.relay-name');
-  const current = g.name;
-  nameEl.innerHTML = `<input class="relay-name-input" type="text" value="${escAttr(current)}">`;
-  const input = nameEl.querySelector('input');
+  if (!chip) { editing = false; return; }
+  const addrEl = boardsEl.querySelector(`.pwm-section[data-pwm-idx="${chipIdx}"] .board-addr`);
+  if (!addrEl) { editing = false; return; }
+
+  const curAddr = chip.address;
+  const curBus = chip.bus;
+
+  addrEl.outerHTML = `<div class="board-settings-inline" data-pwm-idx="${chipIdx}">
+    <label>addr</label>
+    <input type="text" id="pwmSettAddr${chipIdx}" value="${escAttr(curAddr)}" style="width:4rem">
+    <label>bus</label>
+    <input type="number" id="pwmSettBus${chipIdx}" value="${curBus}" min="0" max="10" style="width:3rem">
+    <button class="btn-accent btn-sm" id="pwmSettSave${chipIdx}">Save</button>
+    <button class="btn-surface btn-sm" id="pwmSettCancel${chipIdx}">Cancel</button>
+  </div>`;
+
+  const box = boardsEl.querySelector(`.board-settings-inline[data-pwm-idx="${chipIdx}"]`);
+  box.querySelector(`#pwmSettAddr${chipIdx}`).focus();
+
+  const finish = async (save) => {
+    editing = false;
+    if (save) {
+      const addr = box.querySelector(`#pwmSettAddr${chipIdx}`).value || curAddr;
+      const bus = parseInt(box.querySelector(`#pwmSettBus${chipIdx}`).value);
+      if (addr !== curAddr || bus !== curBus) {
+        const r = await api('PUT', '/api/pwm/settings', {
+          chip: chipIdx, address: addr, bus: isNaN(bus) ? curBus : bus,
+        });
+        if (r.error) { toast(r.error); }
+        else { toast(`Now at ${r.address} bus:${r.bus}`); }
+        await fetchState();
+        return;
+      }
+    }
+    render();
+  };
+
+  box.querySelector(`#pwmSettSave${chipIdx}`).addEventListener('click', (e) => {
+    e.stopPropagation(); finish(true);
+  });
+  box.querySelector(`#pwmSettCancel${chipIdx}`).addEventListener('click', (e) => {
+    e.stopPropagation(); finish(false);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  });
+}
+
+function startEditPwmChipName(chipIdx) {
+  editing = true;
+  const chip = (state.pwm || [])[chipIdx];
+  if (!chip) { editing = false; return; }
+  const nameEl = boardsEl.querySelector(`.pwm-section[data-pwm-idx="${chipIdx}"] .board-name`);
+  if (!nameEl) { editing = false; return; }
+  const current = chip.name;
+  nameEl.outerHTML = `<input class="board-name-input" type="text" value="${escAttr(current)}">`;
+  const input = boardsEl.querySelector(`.pwm-section[data-pwm-idx="${chipIdx}"] .board-name-input`);
   input.focus();
   input.select();
 
   const finish = async (save) => {
     editing = false;
     if (save && input.value !== current) {
-      await renamePwmGroup(chipIdx, gi, input.value);
+      await api('PUT', '/api/pwm/name', { chip: chipIdx, name: input.value });
+      await fetchState();
+      return;
     }
     render();
   };
@@ -1161,6 +1335,105 @@ function startEditPwmGroupName(chipIdx, gi) {
     e.stopPropagation();
   });
   input.addEventListener('blur', () => finish(true));
+}
+
+// --- PWM channels: add / remove ---
+let pwmChannelTarget = null;
+
+function addPwmChannelModal(chipIdx) {
+  const chip = (state.pwm || [])[chipIdx];
+  if (!chip) return;
+  const free = chip.available || [];
+  if (!free.length) { toast('All 16 channels are already configured'); return; }
+  pwmChannelTarget = chipIdx;
+  const sel = document.getElementById('pwmChSel');
+  sel.innerHTML = free.map(c => `<option value="${c}">Channel ${c}</option>`).join('');
+  document.getElementById('pwmChName').value = '';
+  document.getElementById('addPwmChannelModal').classList.add('open');
+  sel.focus();
+}
+
+function closePwmChannelModal() {
+  document.getElementById('addPwmChannelModal').classList.remove('open');
+  pwmChannelTarget = null;
+}
+
+async function addPwmChannel() {
+  if (pwmChannelTarget == null) return;
+  const ch = parseInt(document.getElementById('pwmChSel').value);
+  const name = document.getElementById('pwmChName').value;
+  const r = await api('POST', '/api/pwm/channels', {
+    chip: pwmChannelTarget, channel: ch, name: name || undefined,
+  });
+  if (r.error) { toast(r.error); return; }
+  closePwmChannelModal();
+  await fetchState();
+  toast(`Added channel ${ch}`);
+}
+
+async function removePwmChannel(chipIdx, ch) {
+  const chip = (state.pwm || [])[chipIdx];
+  const c = chip && chip.channels.find(x => x.ch === ch);
+  if (!confirm(`Remove channel ${ch}${c ? ` (${c.name})` : ''}? It goes dark and drops out of any group.`)) return;
+  const r = await api('DELETE', `/api/pwm/channels/${chipIdx}/${ch}`);
+  if (r.error) { toast(r.error); return; }
+  await fetchState();
+  const dropped = (r.groups_dropped || []).filter(Boolean);
+  toast(dropped.length
+    ? `Channel ${ch} removed; group${dropped.length > 1 ? 's' : ''} ${dropped.join(', ')} left empty and removed`
+    : `Channel ${ch} removed`);
+}
+
+// --- PWM groups: add / edit membership / remove ---
+let pwmGroupTarget = null;   // {chip, gi} - gi null when adding
+
+function pwmGroupModal(chipIdx, gi) {
+  const chip = (state.pwm || [])[chipIdx];
+  if (!chip) return;
+  if (!chip.channels.length) { toast('Add a channel first'); return; }
+  const g = gi == null ? null : (chip.groups || []).find(x => x.index === gi);
+  pwmGroupTarget = { chip: chipIdx, gi: g ? gi : null };
+
+  document.getElementById('pwmGroupTitle').textContent = g ? 'Edit Group' : 'Add Group';
+  document.getElementById('pwmGroupName').value = g ? g.name : '';
+  const picked = new Set(g ? g.channels : []);
+  document.getElementById('pwmGroupPicker').innerHTML = chip.channels.map(c =>
+    `<label><input type="checkbox" value="${c.ch}"${picked.has(c.ch) ? ' checked' : ''}>
+       ${c.ch} ${escHtml(c.name)}</label>`
+  ).join('');
+  document.getElementById('pwmGroupModal').classList.add('open');
+  document.getElementById('pwmGroupName').focus();
+}
+
+function closePwmGroupModal() {
+  document.getElementById('pwmGroupModal').classList.remove('open');
+  pwmGroupTarget = null;
+}
+
+async function savePwmGroup() {
+  if (!pwmGroupTarget) return;
+  const { chip, gi } = pwmGroupTarget;
+  const name = document.getElementById('pwmGroupName').value || 'Group';
+  const channels = [...document.getElementById('pwmGroupPicker')
+    .querySelectorAll('input:checked')].map(i => parseInt(i.value));
+  if (!channels.length) { toast('Pick at least one channel'); return; }
+  const r = gi == null
+    ? await api('POST', '/api/pwm/groups', { chip, name, channels })
+    : await api('PUT', '/api/pwm/group', { chip, group: gi, name, channels });
+  if (r.error) { toast(r.error); return; }
+  closePwmGroupModal();
+  await fetchState();
+  toast(gi == null ? `Added group "${name}"` : `Updated "${name}"`);
+}
+
+async function removePwmGroup(chipIdx, gi) {
+  const chip = (state.pwm || [])[chipIdx];
+  const g = chip && (chip.groups || []).find(x => x.index === gi);
+  if (!confirm(`Remove group "${g ? g.name : gi}"? Its channels stay as they are.`)) return;
+  const r = await api('DELETE', `/api/pwm/groups/${chipIdx}/${gi}`);
+  if (r.error) { toast(r.error); return; }
+  await fetchState();
+  toast('Group removed');
 }
 
 // --- Rendering ---
@@ -1175,9 +1448,10 @@ function renderPwmSection() {
       const mixed = g.mixed ? '<span class="pwm-mixed" title="a member is off its weighted ratio">mixed</span>' : '';
       return `<div class="relay-card pwm-card pwm-group-card ${on ? 'is-on' : ''}"
                    data-pwm-chip="${chip.index}" data-pwm-group="${g.index}">
+        <button class="pwm-remove-btn" data-remove-group-chip="${chip.index}" data-remove-group-gi="${g.index}" title="Remove this group">×</button>
         <div class="relay-top">
           <div class="relay-indicator"></div>
-          <button class="relay-edit-btn" data-edit-group-chip="${chip.index}" data-edit-group-gi="${g.index}" title="Edit name">edit</button>
+          <button class="relay-edit-btn" data-edit-group-chip="${chip.index}" data-edit-group-gi="${g.index}" title="Edit name and members">edit</button>
           <span class="relay-num">${members}</span>
         </div>
         <div class="relay-name">${escHtml(g.name)}</div>
@@ -1192,6 +1466,7 @@ function renderPwmSection() {
       const on = c.level > 0;
       return `<div class="relay-card pwm-card ${on ? 'is-on' : ''}"
                    data-pwm-chip="${chip.index}" data-pwm-ch="${c.ch}">
+        <button class="pwm-remove-btn" data-remove-ch-chip="${chip.index}" data-remove-ch="${c.ch}" title="Remove this channel">×</button>
         <div class="relay-top">
           <div class="relay-indicator"></div>
           <button class="relay-edit-btn" data-edit-pwm="${chip.index}" data-edit-pwm-ch="${c.ch}" title="Edit name">edit</button>
@@ -1210,18 +1485,23 @@ function renderPwmSection() {
       return `<option value="${f}"${sel}>${f} Hz</option>`;
     }).join('');
 
+    const empty = '<div class="loading" style="min-height:80px;font-size:0.875rem">No channels configured — click + Ch to add one</div>';
+
     return `<div class="board-section pwm-section" data-pwm-idx="${chip.index}">
       <div class="board-header">
-        <span class="board-name">${escHtml(chip.name)}</span>
-        <span class="board-addr">${chip.address} bus:${chip.bus} · ${chip.freq_hz} Hz (PRE_SCALE ${chip.prescale})</span>
+        <span class="board-name" data-pwm-idx="${chip.index}" title="Click to rename in edit mode">${escHtml(chip.name)}</span>
+        <span class="board-addr" data-pwm-idx="${chip.index}" title="Click to edit in edit mode">${chip.address} bus:${chip.bus} · ${chip.freq_hz} Hz (PRE_SCALE ${chip.prescale})</span>
         ${chip.error ? `<span class="board-error">${escHtml(chip.error)}</span>` : ''}
         <div class="board-actions">
           <select class="pwm-freq" data-pwm-freq="${chip.index}" title="PWM frequency (applies to all 16 channels)">${opts}</select>
+          <button class="btn-surface btn-sm" data-pwm-addch="${chip.index}" title="Add a channel"${(chip.available || []).length ? '' : ' disabled'}>+ Ch</button>
+          <button class="btn-surface btn-sm" data-pwm-addgroup="${chip.index}" title="Drive several channels from one master">+ Group</button>
           <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="${PWM_MAX}">All On</button>
           <button class="btn-surface btn-sm" data-pwm-all="${chip.index}" data-pwm-level="0">All Off</button>
+          ${editMode ? `<button class="btn-danger btn-sm" data-pwm-remove="${chip.index}">Remove</button>` : ''}
         </div>
       </div>
-      <div class="relay-grid">${cards}</div>
+      ${cards ? `<div class="relay-grid">${cards}</div>` : empty}
     </div>`;
   }).join('');
 }
@@ -1385,10 +1665,32 @@ boardsEl.addEventListener('click', (e) => {
   // USB device cards are read-only
   if (e.target.closest('.usb-card')) return;
 
-  // PWM All On / All Off
+  // PWM header buttons
   const pwmAllBtn = e.target.closest('[data-pwm-all]');
   if (pwmAllBtn) {
     pwmSetAll(parseInt(pwmAllBtn.dataset.pwmAll), parseInt(pwmAllBtn.dataset.pwmLevel));
+    return;
+  }
+  const pwmAddCh = e.target.closest('[data-pwm-addch]');
+  if (pwmAddCh) { addPwmChannelModal(parseInt(pwmAddCh.dataset.pwmAddch)); return; }
+
+  const pwmAddGroup = e.target.closest('[data-pwm-addgroup]');
+  if (pwmAddGroup) { pwmGroupModal(parseInt(pwmAddGroup.dataset.pwmAddgroup), null); return; }
+
+  const pwmRemove = e.target.closest('[data-pwm-remove]');
+  if (pwmRemove) { deletePwmChip(parseInt(pwmRemove.dataset.pwmRemove)); return; }
+
+  // PWM card × buttons (edit mode only, per the shared .pwm-remove-btn rule)
+  const chRemove = e.target.closest('[data-remove-ch]');
+  if (chRemove) {
+    e.stopPropagation();
+    removePwmChannel(parseInt(chRemove.dataset.removeChChip), parseInt(chRemove.dataset.removeCh));
+    return;
+  }
+  const grpRemove = e.target.closest('[data-remove-group-gi]');
+  if (grpRemove) {
+    e.stopPropagation();
+    removePwmGroup(parseInt(grpRemove.dataset.removeGroupChip), parseInt(grpRemove.dataset.removeGroupGi));
     return;
   }
 
@@ -1405,7 +1707,7 @@ boardsEl.addEventListener('click', (e) => {
   if (editBtn) {
     e.stopPropagation();
     if (editBtn.dataset.editGroupChip != null) {
-      startEditPwmGroupName(parseInt(editBtn.dataset.editGroupChip), parseInt(editBtn.dataset.editGroupGi));
+      pwmGroupModal(parseInt(editBtn.dataset.editGroupChip), parseInt(editBtn.dataset.editGroupGi));
     } else if (editBtn.dataset.editPwm != null) {
       startEditPwmName(parseInt(editBtn.dataset.editPwm), parseInt(editBtn.dataset.editPwmCh));
     } else if (editBtn.dataset.editGpio != null) {
@@ -1451,13 +1753,15 @@ boardsEl.addEventListener('click', (e) => {
 
   const boardName = e.target.closest('.board-name');
   if (boardName && editMode) {
-    startEditBoardName(parseInt(boardName.dataset.boardIdx));
+    if (boardName.dataset.pwmIdx != null) startEditPwmChipName(parseInt(boardName.dataset.pwmIdx));
+    else startEditBoardName(parseInt(boardName.dataset.boardIdx));
     return;
   }
 
   const boardAddr = e.target.closest('.board-addr');
   if (boardAddr && editMode) {
-    startEditBoardSettings(parseInt(boardAddr.dataset.boardIdx));
+    if (boardAddr.dataset.pwmIdx != null) startEditPwmSettings(parseInt(boardAddr.dataset.pwmIdx));
+    else startEditBoardSettings(parseInt(boardAddr.dataset.boardIdx));
   }
 });
 
@@ -1833,10 +2137,24 @@ document.getElementById('addGpioModal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeGpioModal();
 });
 
+const PWM_MODALS = [
+  ['addPwmModal', closePwmModal],
+  ['addPwmChannelModal', closePwmChannelModal],
+  ['pwmGroupModal', closePwmGroupModal],
+];
+for (const [id, close] of PWM_MODALS) {
+  document.getElementById(id).addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) close();
+  });
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (document.getElementById('addBoardModal').classList.contains('open')) closeModal();
   if (document.getElementById('addGpioModal').classList.contains('open')) closeGpioModal();
+  for (const [id, close] of PWM_MODALS) {
+    if (document.getElementById(id).classList.contains('open')) close();
+  }
 });
 
 // --- Toast ---

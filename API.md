@@ -469,6 +469,7 @@ curl -s -X PUT -H 'Content-Type: application/json' \
 ### Add / remove / reset a chip
 
 ```bash
+# `size` seeds that many channels (0..size-1); add or remove them individually after
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"name":"LED Strips","address":"0x40","bus":2,"size":4,"freq_hz":1526}' \
   http://your-pi:8080/api/pwm
@@ -480,8 +481,48 @@ curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0}' http://your-pi:8080/api/pwm/reset
 ```
 
-`size` is how many channels the UI shows; the chip always has 16 and all-off
-covers all of them. Removing a chip blanks its outputs first.
+Removing a chip blanks its outputs first. Adding is refused if the address is
+already claimed on that bus, **including by a relay board** - a PCA9685 write
+aimed at an XL9535 lands on its output registers and power-cycles whatever is
+plugged into it.
+
+### Change I2C address or bus
+
+```bash
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"chip":0,"address":"0x41","bus":2}' \
+  http://your-pi:8080/api/pwm/settings
+```
+
+Response: `{"ok":true,"address":"0x41","bus":2,"moved":true}`
+
+Same conflict check as adding. When the chip actually moves, the old address is
+blanked first so nothing is left lit on a chip no longer being managed, then
+the new one is initialised (wake, auto-increment, frequency, all channels off).
+A 500 means nothing answered at the new address.
+
+### Add / remove individual channels
+
+Which channels a chip manages is driven by the `channels` map, not a count, so
+they need not be contiguous - manage 0-3 for two strips and 7 for an IR bank
+with nothing in between. `GET /api/pwm` reports `available`, the channels the
+chip has that this config does not yet manage.
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"chip":0,"channel":7,"name":"IR 850nm"}' \
+  http://your-pi:8080/api/pwm/channels
+
+curl -s -X DELETE http://your-pi:8080/api/pwm/channels/0/7
+```
+
+A newly added channel starts dark. Removing one blanks it and drops it from
+any group; a group left with no members is removed too and named in the
+response's `groups_dropped`.
+
+Configs written before per-channel control used a `size` field. Those still
+work and are expanded into an explicit map the first time a channel is added
+or removed.
 
 ## Errors
 

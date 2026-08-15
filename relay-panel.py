@@ -209,6 +209,7 @@ PCA_M1_SLEEP = 0x10
 
 PCA_OSC_HZ = 25_000_000
 PCA_STEPS = 4096
+PCA_CHANNELS = 16         # the chip always has 16; config picks which are wired
 PCA_FULL = 0x10           # bit 4 of LEDn_ON_H / LEDn_OFF_H
 PWM_MAX = PCA_STEPS - 1   # 4095
 PCA_PRESCALE_MIN = 3      # 1526.0 Hz
@@ -268,6 +269,7 @@ def pca_dump(bus, addr):
     if rc != 0:
         return None
     regs = [0] * 256
+    seen = 0
     for line in out.splitlines():
         parts = line.split()
         if not parts or not parts[0].endswith(":"):
@@ -280,9 +282,13 @@ def pca_dump(bus, addr):
             if len(tok) == 2 and base + i < 256:
                 try:
                     regs[base + i] = int(tok, 16)
+                    seen += 1
                 except ValueError:
                     pass                          # "XX" = unreadable register
-    return regs
+    # i2cdump exits 0 even when nothing answers, printing a full page of XX, so
+    # an empty parse is how an absent chip actually shows up. Writes NAK and
+    # report themselves; reads would otherwise look like a chip full of zeros.
+    return regs if seen else None
 
 
 def pca_set_channel(bus, addr, ch, level, phase):
@@ -339,6 +345,29 @@ def pca_init(bus, addr, freq_hz):
     pca_set_freq(bus, addr, freq_hz)
 
 
+def pca_enabled_channels(chip):
+    """Channel numbers this chip manages, in order.
+
+    The `channels` map is the source of truth, so channels can be added and
+    removed one at a time: a rig might wire 0-3 for two strips and later 7 for
+    an IR bank, with nothing in between. `size` is only consulted for configs
+    written before per-channel add/remove existed.
+    """
+    raw = chip.get("channels")
+    if isinstance(raw, dict) and raw:
+        out = set()
+        for k in raw:
+            try:
+                c = int(k)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= c < PCA_CHANNELS:
+                out.add(c)
+        return sorted(out)
+    size = min(int(chip.get("size", PCA_CHANNELS)), PCA_CHANNELS)
+    return list(range(max(0, size)))
+
+
 def pca_channel_cfg(chip, ch):
     """(name, phase) for a channel, filling in defaults."""
     entry = chip.get("channels", {}).get(str(ch)) or {}
@@ -359,14 +388,16 @@ def pca_group_cfg(chip, gi):
     groups = chip.get("groups", [])
     g = groups[gi] if 0 <= gi < len(groups) else {}
     name = g.get("name") or f"Group {gi}"
-    size = chip.get("size", 16)
+    # A group can only cover channels the chip still manages, so removing a
+    # channel cannot leave a group pointing at one that is no longer there.
+    enabled = set(pca_enabled_channels(chip))
     channels = []
     for c in g.get("channels", []):
         try:
             c = int(c)
         except (TypeError, ValueError):
             continue
-        if 0 <= c < size and c not in channels:
+        if c in enabled and c not in channels:
             channels.append(c)
     raw = g.get("weights") or {}
     weights = {}
@@ -442,11 +473,11 @@ def get_pwm_state(config):
     for idx, chip in enumerate(config.get("pwm", [])):
         bus = chip["bus"]
         addr = chip["address"]
-        size = chip.get("size", 16)
+        enabled = pca_enabled_channels(chip)
         regs = pca_dump(bus, addr)
         prescale = regs[PCA_PRESCALE] if regs else 0
         channels = []
-        for ch in range(size):
+        for ch in enabled:
             name, phase = pca_channel_cfg(chip, ch)
             if regs:
                 base = PCA_LED0_BASE + 4 * ch
@@ -466,7 +497,10 @@ def get_pwm_state(config):
             "name": chip.get("name", f"PWM {idx}"),
             "address": addr,
             "bus": bus,
-            "size": size,
+            "size": len(enabled),
+            # channels the chip has but this config does not manage, so the UI
+            # can offer exactly what is left to add
+            "available": [c for c in range(PCA_CHANNELS) if c not in enabled],
             "prescale": prescale,
             "freq_hz": round(pca_freq_for(prescale), 1) if regs else 0,
             "channels": channels,
@@ -474,6 +508,36 @@ def get_pwm_state(config):
             "error": None if regs else f"no response at {addr} on bus {bus}",
         })
     return result
+
+
+def i2c_address_conflict(config, bus, addr, skip_pwm=None):
+    """Return a description if something else already claims this bus address.
+
+    Worth blocking rather than trusting the user: a PCA9685 write aimed at an
+    XL9535 relay board lands on its output registers and power-cycles whatever
+    is plugged into that board.
+    """
+    for b in config.get("boards", []):
+        if b["address"] == addr and b["bus"] == bus:
+            return f"{addr} on bus {bus} is relay board '{b.get('name', '?')}'"
+    for i, c in enumerate(config.get("pwm", [])):
+        if i != skip_pwm and c["address"] == addr and c["bus"] == bus:
+            return f"{addr} on bus {bus} is PWM chip '{c.get('name', '?')}'"
+    return None
+
+
+def pca_materialize_channels(chip):
+    """Turn a legacy `size`-only chip into an explicit channel map.
+
+    Add and remove operate on the map, so anything written before per-channel
+    control existed has to be expanded once before it can be edited.
+    """
+    existing = pca_enabled_channels(chip)
+    chans = chip.setdefault("channels", {})
+    for c in existing:
+        chans.setdefault(str(c), {"name": f"Ch {c}"})
+    chip.pop("size", None)
+    return chans
 
 
 def resolve_level(body):
@@ -835,8 +899,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid chip or channel"}, 400)
                 return
             chip = chips[chip_idx]
-            if not 0 <= ch < chip.get("size", 16):
-                self.send_json({"error": "Channel out of range"}, 400)
+            if ch not in pca_enabled_channels(chip):
+                self.send_json({"error": f"Channel {ch} is not configured on this chip"}, 400)
                 return
             name, phase = pca_channel_cfg(chip, ch)
             try:
@@ -864,12 +928,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid chip"}, 400)
                 return
             chip = chips[chip_idx]
+            enabled = pca_enabled_channels(chip)
             try:
                 if level == 0:
                     pca_all_off(chip["bus"], chip["address"])
                 else:
                     # per-channel so each keeps its own stagger phase
-                    for ch in range(chip.get("size", 16)):
+                    for ch in enabled:
                         _, phase = pca_channel_cfg(chip, ch)
                         pca_set_channel(chip["bus"], chip["address"], ch, level, phase)
             except Exception as e:
@@ -879,7 +944,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "chip": chip_idx,
                 "level": level,
                 "percent": round(100.0 * level / PWM_MAX, 2),
-                "count": chip.get("size", 16),
+                "count": len(enabled),
             })
 
         elif path == "/api/pwm/off":
@@ -948,10 +1013,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid chip"}, 400)
                     return
                 chip = config["pwm"][chip_idx]
-                size = chip.get("size", 16)
-                bad = [c for c in channels if not isinstance(c, int) or not 0 <= c < size]
+                enabled = pca_enabled_channels(chip)
+                bad = [c for c in channels if not isinstance(c, int) or c not in enabled]
                 if bad:
-                    self.send_json({"error": f"channels out of range for a {size}-channel chip: {bad}"}, 400)
+                    self.send_json({"error": f"channels not configured on this chip: {bad}"}, 400)
                     return
                 chip.setdefault("groups", []).append({
                     "name": name,
@@ -959,6 +1024,45 @@ class RelayHandler(BaseHTTPRequestHandler):
                 })
                 save_config(config)
             self.send_json({"ok": True, "group": len(chip["groups"]) - 1})
+
+        elif path == "/api/pwm/channels":
+            chip_idx = body.get("chip", 0)
+            try:
+                ch = int(body.get("channel"))
+            except (TypeError, ValueError):
+                self.send_json({"error": "channel is required"}, 400)
+                return
+            if not 0 <= ch < PCA_CHANNELS:
+                self.send_json({"error": f"channel must be 0-{PCA_CHANNELS - 1}"}, 400)
+                return
+            name = body.get("name") or f"Ch {ch}"
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                if ch in pca_enabled_channels(chip):
+                    self.send_json({"error": f"Channel {ch} is already configured"}, 400)
+                    return
+                chans = pca_materialize_channels(chip)
+                entry = {"name": name}
+                if body.get("phase") is not None:
+                    try:
+                        entry["phase"] = int(body["phase"]) & 0x0FFF
+                    except (TypeError, ValueError):
+                        self.send_json({"error": "phase must be an integer"}, 400)
+                        return
+                chans[str(ch)] = entry
+                save_config(config)
+            # a channel that just came under management must start dark
+            try:
+                _, phase = pca_channel_cfg(chip, ch)
+                pca_set_channel(chip["bus"], chip["address"], ch, 0, phase)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
+            self.send_json({"ok": True, "channel": ch, "name": name})
 
         elif path == "/api/pwm/reset":
             chip_idx = body.get("chip", 0)
@@ -982,16 +1086,16 @@ class RelayHandler(BaseHTTPRequestHandler):
             size = body.get("size", 16)
             name = body.get("name", "LED PWM")
             freq = body.get("freq_hz", PWM_DEFAULT_FREQ)
+            size = max(1, min(PCA_CHANNELS, int(size)))
             with config_lock:
                 config = load_config()
-                for c in config["pwm"]:
-                    if c["address"] == addr and c["bus"] == bus:
-                        self.send_json({"error": f"PWM chip at {addr} on bus {bus} already exists"}, 400)
-                        return
+                clash = i2c_address_conflict(config, bus, addr)
+                if clash:
+                    self.send_json({"error": clash}, 400)
+                    return
                 config["pwm"].append({
                     "address": addr,
                     "bus": bus,
-                    "size": size,
                     "name": name,
                     "freq_hz": freq,
                     "channels": {str(i): {"name": f"Ch {i}"} for i in range(size)},
@@ -1129,7 +1233,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid group"}, 400)
                     return
                 group = chip["groups"][gi]
-                size = chip.get("size", 16)
+                enabled = pca_enabled_channels(chip)
                 if "name" in body:
                     group["name"] = body["name"]
                 if "channels" in body:
@@ -1137,9 +1241,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                     if not isinstance(chans, list) or not chans:
                         self.send_json({"error": "channels must be a non-empty list"}, 400)
                         return
-                    bad = [c for c in chans if not isinstance(c, int) or not 0 <= c < size]
+                    bad = [c for c in chans if not isinstance(c, int) or c not in enabled]
                     if bad:
-                        self.send_json({"error": f"channels out of range: {bad}"}, 400)
+                        self.send_json({"error": f"channels not configured on this chip: {bad}"}, 400)
                         return
                     group["channels"] = chans
                 if "weights" in body:
@@ -1163,6 +1267,44 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "channels": chans,
                 "weights": {str(k): v for k, v in w.items()},
             })
+
+        elif path == "/api/pwm/settings":
+            chip_idx = body.get("chip", 0)
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                old_addr, old_bus = chip["address"], chip["bus"]
+                new_addr = body.get("address", old_addr)
+                new_bus = body.get("bus", old_bus)
+                try:
+                    new_bus = int(new_bus)
+                except (TypeError, ValueError):
+                    self.send_json({"error": "bus must be an integer"}, 400)
+                    return
+                clash = i2c_address_conflict(config, new_bus, new_addr, skip_pwm=chip_idx)
+                if clash:
+                    self.send_json({"error": clash}, 400)
+                    return
+                chip["address"] = new_addr
+                chip["bus"] = new_bus
+                save_config(config)
+            moved = (new_addr, new_bus) != (old_addr, old_bus)
+            if moved:
+                # blank the old address first, or a strip stays lit on a chip
+                # nothing manages any more
+                try:
+                    pca_all_off(old_bus, old_addr)
+                except Exception:
+                    pass
+            try:
+                pca_init(new_bus, new_addr, chip.get("freq_hz", PWM_DEFAULT_FREQ))
+            except Exception as e:
+                self.send_json({"error": f"no response at {new_addr} on bus {new_bus}: {e}"}, 500)
+                return
+            self.send_json({"ok": True, "address": new_addr, "bus": new_bus, "moved": moved})
 
         elif path == "/api/pwm/freq":
             chip_idx = body.get("chip", 0)
@@ -1306,6 +1448,42 @@ class RelayHandler(BaseHTTPRequestHandler):
                 config["boards"].pop(board_idx)
                 save_config(config)
             self.send_json({"ok": True})
+        elif path.startswith("/api/pwm/channels/"):
+            # tested before the bare /api/pwm/<idx> case, which would otherwise
+            # read the channel number as a chip index
+            parts = path.split("/")
+            try:
+                chip_idx, ch = int(parts[-2]), int(parts[-1])
+            except (ValueError, IndexError):
+                self.send_json({"error": "expected /api/pwm/channels/<chip>/<channel>"}, 400)
+                return
+            with config_lock:
+                config = load_config()
+                if chip_idx >= len(config.get("pwm", [])):
+                    self.send_json({"error": "Invalid chip"}, 400)
+                    return
+                chip = config["pwm"][chip_idx]
+                if ch not in pca_enabled_channels(chip):
+                    self.send_json({"error": f"Channel {ch} is not configured"}, 400)
+                    return
+                chans = pca_materialize_channels(chip)
+                chans.pop(str(ch), None)
+                # a group must never point at a channel the chip no longer
+                # manages; one left with no members goes too
+                groups = chip.get("groups", [])
+                for g in groups:
+                    g["channels"] = [c for c in g.get("channels", []) if c != ch]
+                    if isinstance(g.get("weights"), dict):
+                        g["weights"].pop(str(ch), None)
+                dropped = [g.get("name") for g in groups if not g.get("channels")]
+                chip["groups"] = [g for g in groups if g.get("channels")]
+                save_config(config)
+            # never leave a lit channel behind that nothing manages
+            try:
+                pca_set_channel(chip["bus"], chip["address"], ch, 0, 0)
+            except Exception:
+                pass
+            self.send_json({"ok": True, "channel": ch, "groups_dropped": dropped})
         elif path.startswith("/api/pwm/groups/"):
             # must be tested before the bare /api/pwm/<idx> case below, which
             # would otherwise read the group index as a chip index
