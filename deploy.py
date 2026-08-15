@@ -12,14 +12,16 @@ so this script:
   4. restores the snapshot and verifies it, rather than assuming.
 
 Usage:
+    export RELAY_PANEL_SSH=root@your-pi
     ./deploy.py                 # deploy whatever changed
-    ./deploy.py --host other    # a different Orange Pi
+    ./deploy.py --host root@other-pi
     ./deploy.py --dry-run       # show what would be copied
     ./deploy.py --force         # deploy even if a flash looks active
 """
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -163,11 +165,15 @@ def verify(pi, snap):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default="root@your-pi")
+    ap.add_argument("--host", default=os.environ.get("RELAY_PANEL_SSH"),
+                    help="ssh target for the Pi, e.g. root@bench-pi "
+                         "(default: $RELAY_PANEL_SSH)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true",
                     help="deploy even if a flash appears to be in progress")
     args = ap.parse_args()
+    if not args.host:
+        ap.error("no target: pass --host or set RELAY_PANEL_SSH")
     pi = Pi(args.host)
 
     print("== changes ==")

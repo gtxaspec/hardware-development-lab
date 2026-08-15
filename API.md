@@ -1,15 +1,23 @@
 # Relay Control Panel API
 
-Base URL: `http://your-pi:8080`
+The examples below use `$PANEL` for the panel's base URL. Set it once:
+
+```bash
+export PANEL=http://your-pi:8080
+```
 
 All requests use JSON. Set `Content-Type: application/json` on POST/PUT.
+
+Board addresses, bus numbers and channel assignments in the examples are
+illustrative — they describe whatever your bench is wired as, not a fixed
+layout.
 
 ## Get State
 
 Get all boards, relay names, and on/off states.
 
 ```bash
-curl -s http://your-pi:8080/api/state
+curl -s $PANEL/api/state
 ```
 
 Response:
@@ -42,7 +50,7 @@ Response:
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"board":0,"relay":5}' \
-  http://your-pi:8080/api/relay/toggle
+  $PANEL/api/relay/toggle
 ```
 
 Response: `{"state": true}`
@@ -53,12 +61,12 @@ Response: `{"state": true}`
 # Turn on
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"board":0,"relay":5,"state":true}' \
-  http://your-pi:8080/api/relay/set
+  $PANEL/api/relay/set
 
 # Turn off
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"board":0,"relay":5,"state":false}' \
-  http://your-pi:8080/api/relay/set
+  $PANEL/api/relay/set
 ```
 
 Response: `{"state": true}` or `{"state": false}`
@@ -69,12 +77,12 @@ Response: `{"state": true}` or `{"state": false}`
 # All on
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"board":0,"state":true}' \
-  http://your-pi:8080/api/board/all
+  $PANEL/api/board/all
 
 # All off
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"board":0,"state":false}' \
-  http://your-pi:8080/api/board/all
+  $PANEL/api/board/all
 ```
 
 Response: `{"ok": true}`
@@ -86,7 +94,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"board":0,"relay":5,"name":"Front Light"}' \
-  http://your-pi:8080/api/relay/name
+  $PANEL/api/relay/name
 ```
 
 Response: `{"ok": true}`
@@ -96,7 +104,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"board":0,"name":"Bench Rack"}' \
-  http://your-pi:8080/api/board/name
+  $PANEL/api/board/name
 ```
 
 Response: `{"ok": true}`
@@ -108,7 +116,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"name":"Board 2","address":"0x21","bus":2,"size":8}' \
-  http://your-pi:8080/api/boards
+  $PANEL/api/boards
 ```
 
 Response: `{"ok": true}`
@@ -118,7 +126,7 @@ Sizes: 1, 2, 4, 8, 16. Addresses: 0x20-0x27.
 ### Remove a board
 
 ```bash
-curl -s -X DELETE http://your-pi:8080/api/boards/1
+curl -s -X DELETE $PANEL/api/boards/1
 ```
 
 The number is the board index (0-based).
@@ -130,7 +138,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"board":0,"address":"0x22","bus":2,"size":16}' \
-  http://your-pi:8080/api/board/settings
+  $PANEL/api/board/settings
 ```
 
 Response: `{"ok": true}`
@@ -142,7 +150,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"board":0,"layout":"board"}' \
-  http://your-pi:8080/api/board/layout
+  $PANEL/api/board/layout
 ```
 
 Values: `"grid"` or `"board"`. Response: `{"ok": true}`
@@ -152,7 +160,7 @@ Values: `"grid"` or `"board"`. Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"board":0}' \
-  http://your-pi:8080/api/board/flip
+  $PANEL/api/board/flip
 ```
 
 Response: `{"flipped": true}`
@@ -167,7 +175,7 @@ known state is restored on server startup.
 ### Get GPIOs only
 
 ```bash
-curl -s http://your-pi:8080/api/gpios
+curl -s $PANEL/api/gpios
 ```
 
 Response:
@@ -186,7 +194,7 @@ GPIOs are also included in `GET /api/state` under the `gpios` key.
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"wpi":27,"pin":40,"name":"USB Switch"}' \
-  http://your-pi:8080/api/gpios
+  $PANEL/api/gpios
 ```
 
 `wpi` is required; `pin` and `name` are optional. Starts in OFF state and sets
@@ -197,7 +205,7 @@ Response: `{"ok": true}`
 ### Remove a GPIO
 
 ```bash
-curl -s -X DELETE http://your-pi:8080/api/gpios/27
+curl -s -X DELETE $PANEL/api/gpios/27
 ```
 
 The path parameter is the wPi number. Does not change the pin state on the hardware.
@@ -209,7 +217,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"wpi":27}' \
-  http://your-pi:8080/api/gpio/toggle
+  $PANEL/api/gpio/toggle
 ```
 
 Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
@@ -219,7 +227,7 @@ Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"wpi":27,"state":true}' \
-  http://your-pi:8080/api/gpio/set
+  $PANEL/api/gpio/set
 ```
 
 Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
@@ -229,7 +237,7 @@ Response: `{"wpi": 27, "name": "USB Switch", "state": "on"}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"wpi":27,"name":"Front USB"}' \
-  http://your-pi:8080/api/gpio/name
+  $PANEL/api/gpio/name
 ```
 
 Response: `{"ok": true}`
@@ -239,7 +247,7 @@ Response: `{"ok": true}`
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"wpi":27,"pin":40}' \
-  http://your-pi:8080/api/gpio/pin
+  $PANEL/api/gpio/pin
 ```
 
 Response: `{"ok": true}`
@@ -253,7 +261,7 @@ disappear as they physically enumerate. Also shown live at the bottom of
 the web UI (1 s poll).
 
 ```bash
-curl -s http://your-pi:8080/api/usb
+curl -s $PANEL/api/usb
 ```
 
 Response:
@@ -295,7 +303,7 @@ every response reports the achieved value.
 ### Get PWM state
 
 ```bash
-curl -s http://your-pi:8080/api/pwm
+curl -s $PANEL/api/pwm
 ```
 
 Response:
@@ -333,12 +341,12 @@ lowers both peak current draw and combined optical ripple.
 # by raw duty - use this for repeatable test steps
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"channel":0,"level":2048}' \
-  http://your-pi:8080/api/pwm/set
+  $PANEL/api/pwm/set
 
 # by percent
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"channel":0,"percent":50}' \
-  http://your-pi:8080/api/pwm/set
+  $PANEL/api/pwm/set
 ```
 
 Response: `{"chip":0,"channel":0,"name":"White Strip","level":2048,"percent":50.01}`
@@ -351,7 +359,7 @@ are a genuinely constant rail rather than a 160 ns sliver of a pulse.
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"level":4095}' \
-  http://your-pi:8080/api/pwm/all
+  $PANEL/api/pwm/all
 ```
 
 Each channel keeps its own stagger phase.
@@ -361,11 +369,11 @@ Each channel keeps its own stagger phase.
 ```bash
 # one chip
 curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"chip":0}' http://your-pi:8080/api/pwm/off
+  -d '{"chip":0}' $PANEL/api/pwm/off
 
 # every configured chip
 curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{}' http://your-pi:8080/api/pwm/off
+  -d '{}' $PANEL/api/pwm/off
 ```
 
 Single I2C write to the ALL_LED registers, so all 16 channels go dark together
@@ -408,21 +416,21 @@ Groups appear per chip in `GET /api/pwm`:
 # create
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"name":"RGB Strip","channels":[1,2,3]}' \
-  http://your-pi:8080/api/pwm/groups
+  $PANEL/api/pwm/groups
 
 # drive every member from one master
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"group":0,"level":2048}' \
-  http://your-pi:8080/api/pwm/group
+  $PANEL/api/pwm/group
 
 # rename, re-scope, or set weights (any subset of the three)
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"group":0,"name":"RGB Strip","channels":[1,2,3],
        "weights":{"1":4095,"2":3200,"3":2600}}' \
-  http://your-pi:8080/api/pwm/group
+  $PANEL/api/pwm/group
 
 # delete
-curl -s -X DELETE http://your-pi:8080/api/pwm/groups/0/0
+curl -s -X DELETE $PANEL/api/pwm/groups/0/0
 ```
 
 Setting a group responds with the exact member levels written:
@@ -434,7 +442,7 @@ Setting a group responds with the exact member levels written:
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"freq_hz":1526}' \
-  http://your-pi:8080/api/pwm/freq
+  $PANEL/api/pwm/freq
 ```
 
 Response: `{"chip":0,"requested_hz":1526,"prescale":3,"freq_hz":1525.9}`
@@ -447,7 +455,7 @@ about a millisecond) and then restarts the channels at their prior duty.
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"channel":2,"phase":1365}' \
-  http://your-pi:8080/api/pwm/phase
+  $PANEL/api/pwm/phase
 ```
 
 Response: `{"ok": true, "phase": 1365}`. Re-applies at the current duty.
@@ -458,12 +466,12 @@ Response: `{"ok": true, "phase": 1365}`. Re-applies at the current duty.
 # a channel
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"channel":0,"name":"White Strip"}' \
-  http://your-pi:8080/api/pwm/name
+  $PANEL/api/pwm/name
 
 # the chip itself (omit `channel`)
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"name":"LED Strips"}' \
-  http://your-pi:8080/api/pwm/name
+  $PANEL/api/pwm/name
 ```
 
 ### Add / remove / reset a chip
@@ -472,13 +480,13 @@ curl -s -X PUT -H 'Content-Type: application/json' \
 # `size` seeds that many channels (0..size-1); add or remove them individually after
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"name":"LED Strips","address":"0x40","bus":2,"size":4,"freq_hz":1526}' \
-  http://your-pi:8080/api/pwm
+  $PANEL/api/pwm
 
-curl -s -X DELETE http://your-pi:8080/api/pwm/0
+curl -s -X DELETE $PANEL/api/pwm/0
 
 # re-init: wake, auto-increment on, re-apply frequency, all channels off
 curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"chip":0}' http://your-pi:8080/api/pwm/reset
+  -d '{"chip":0}' $PANEL/api/pwm/reset
 ```
 
 Removing a chip blanks its outputs first. Adding is refused if the address is
@@ -491,7 +499,7 @@ plugged into it.
 ```bash
 curl -s -X PUT -H 'Content-Type: application/json' \
   -d '{"chip":0,"address":"0x41","bus":2}' \
-  http://your-pi:8080/api/pwm/settings
+  $PANEL/api/pwm/settings
 ```
 
 Response: `{"ok":true,"address":"0x41","bus":2,"moved":true}`
@@ -511,9 +519,9 @@ chip has that this config does not yet manage.
 ```bash
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"chip":0,"channel":7,"name":"IR 850nm"}' \
-  http://your-pi:8080/api/pwm/channels
+  $PANEL/api/pwm/channels
 
-curl -s -X DELETE http://your-pi:8080/api/pwm/channels/0/7
+curl -s -X DELETE $PANEL/api/pwm/channels/0/7
 ```
 
 A newly added channel starts dark. Removing one blanks it and drops it from
@@ -545,4 +553,4 @@ All errors return HTTP 400 with:
   known-safe state, not a resume. No duty is persisted across a restart on
   purpose, so a stale config can never bring a strip back up at an unexpected
   level. Snapshot what is on before restarting the service and re-set it after.
-- Web UI at `http://your-pi:8080`
+- Web UI at `$PANEL`

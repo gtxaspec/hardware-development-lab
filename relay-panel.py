@@ -2,6 +2,7 @@
 """Relay Control Panel - Web interface for XL9535 I2C relay boards."""
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -9,14 +10,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
-BASE_DIR = Path("/opt/relay-panel")
+BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
 STATIC_DIR = BASE_DIR / "static"
-LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = 8080
+LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "0.0.0.0")
+LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
 
 USB_SYS_PATH = Path("/sys/bus/usb/devices")
-USB_VID_FILTER = "a108"  # Ingenic bootrom (c309) / U-Boot DFU gadget (4d44)
+# Which USB vendor to watch for. Defaults to Ingenic, whose bootrom (a108:c309)
+# and U-Boot DFU gadget (a108:4d44) are what a camera bench wants to see; set
+# RELAY_PANEL_USB_VID to follow a different vendor.
+USB_VID_FILTER = os.environ.get("RELAY_PANEL_USB_VID", "a108")
 
 i2c_lock = threading.Lock()
 gpio_lock = threading.Lock()

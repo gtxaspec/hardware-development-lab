@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """MCP server for the Relay Control Panel."""
 
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-BASE_URL = "http://your-pi:8080"
+# Where the panel is reachable. Set RELAY_PANEL_URL in the MCP server's env if
+# it runs on a different machine to the panel, which is the usual case.
+BASE_URL = os.environ.get("RELAY_PANEL_URL", "http://localhost:8080")
 
 mcp = FastMCP(
     "relay-panel",
     instructions=(
-        "Control I2C relay boards and direct GPIO pins on your-pi. "
+        "Control I2C relay boards and direct GPIO pins on a hardware test bench. "
         "Relays are grouped on I2C boards (board index + relay number). "
         "GPIOs are individual wiringPi-numbered pins used for direct HI/LOW control "
         "(e.g. driving a USB switch from pin 40 / wPi 27). "

@@ -4,8 +4,8 @@ Web panel, HTTP API and MCP server for the camera test bench: I²C relay boards,
 direct GPIO pins, dimmable LED strips, and a live view of which devices are
 sitting in a flashable USB state.
 
-It runs on the Orange Pi wired into the bench and is reachable at
-**http://your-pi:8080**.
+It runs on a single-board computer wired into the bench — an Orange Pi here, but
+anything with I²C and a `gpio` CLI will do — and serves on port 8080.
 
 ## What it drives
 
@@ -44,9 +44,9 @@ what the bench is actually doing rather than what it was last told.
 ## Deploying
 
 ```bash
+export RELAY_PANEL_SSH=root@your-pi   # or pass --host every time
 ./deploy.py              # copy what changed, restart only if needed
 ./deploy.py --dry-run    # show what would be copied
-./deploy.py --host root@other-pi
 ```
 
 Read this before deploying by hand:
@@ -66,16 +66,43 @@ config can never bring a strip back up at an unexpected level.
 
 ## First-time install
 
+On the Pi, enable I²C and install `i2c-tools` (for `i2cget`/`i2cset`/`i2cdump`)
+and `wiringOP` (for the `gpio` CLI — only needed if you want the GPIO section).
+Then find your bus and what is on it:
+
 ```bash
-ssh root@your-pi 'mkdir -p /opt/relay-panel/static'
-scp relay-panel.py root@your-pi:/opt/relay-panel/
-scp static/index.html root@your-pi:/opt/relay-panel/static/
-scp relay-panel.service root@your-pi:/etc/systemd/system/
-ssh root@your-pi 'systemctl daemon-reload && systemctl enable --now relay-panel'
+i2cdetect -l              # which bus number your header is
+i2cdetect -y -r 2         # what answers on it
 ```
 
-Needs `i2c-tools` and `wiringOP` on the Pi. Boards, GPIOs and PWM chips are then
-added from the web UI.
+The bus number and every address are site-specific: they are whatever your
+boards' jumpers are set to. Nothing in this repo assumes a particular layout.
+
+```bash
+PI=root@your-pi
+ssh $PI 'mkdir -p /opt/relay-panel/static'
+scp relay-panel.py $PI:/opt/relay-panel/
+scp static/index.html $PI:/opt/relay-panel/static/
+scp relay-panel.service $PI:/etc/systemd/system/
+ssh $PI 'systemctl daemon-reload && systemctl enable --now relay-panel'
+```
+
+Then open `http://your-pi:8080` and add your boards, GPIOs and PWM chips from
+the web UI. Nothing else needs editing — the config is built through the UI, not
+checked in.
+
+### Environment variables
+
+All optional; the defaults suit a normal install.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `RELAY_PANEL_DIR` | `/opt/relay-panel` | server: install dir holding `config.json` and `static/` |
+| `RELAY_PANEL_HOST` | `0.0.0.0` | server: listen address |
+| `RELAY_PANEL_PORT` | `8080` | server: listen port |
+| `RELAY_PANEL_USB_VID` | `a108` (Ingenic) | server: which USB vendor the USB section watches |
+| `RELAY_PANEL_URL` | `http://localhost:8080` | MCP server: where the panel is |
+| `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target |
 
 ## Configuration
 
@@ -85,11 +112,11 @@ control — it describes one physical bench.
 ```jsonc
 {
   "boards": [
-    {"address": "0x20", "bus": 2, "size": 16, "name": "Main Power",
-     "layout": "board", "relays": {"0": "Wyze V3 Pro", "7": "Master 5v"}}
+    {"address": "0x20", "bus": 2, "size": 16, "name": "Bench Power",
+     "layout": "board", "relays": {"0": "Camera 1", "7": "5V Rail"}}
   ],
   "gpios": [
-    {"wpi": 27, "pin": 40, "name": "Wyze V3 USB", "state": false}
+    {"wpi": 27, "pin": 40, "name": "USB Switch", "state": false}
   ],
   "pwm": [
     {"address": "0x40", "bus": 2, "name": "LED Strips", "freq_hz": 1526,
@@ -162,11 +189,16 @@ exists before firmware runs.
 
 ### If the whole I²C bus goes quiet
 
-Disturbing the bench cabling can wedge the controller — every device stops
-answering and `dmesg` shows `rk3x-i2c ...: timeout, ipd: 0x00, state: 4`. Reset
-it without rebooting:
+Disturbing the bench cabling can wedge the controller — every device on the bus
+stops answering at once and `dmesg` shows controller timeouts (on Rockchip,
+`rk3x-i2c ...: timeout, ipd: 0x00, state: 4`). Reset it without rebooting by
+unbinding and rebinding the controller. Find the driver and device names first,
+since they vary by SoC:
 
 ```bash
+ls /sys/bus/platform/drivers/ | grep i2c        # e.g. rk3x-i2c
+ls /sys/bus/platform/drivers/rk3x-i2c/          # e.g. fe5b0000.i2c
+
 echo fe5b0000.i2c > /sys/bus/platform/drivers/rk3x-i2c/unbind
 sleep 1
 echo fe5b0000.i2c > /sys/bus/platform/drivers/rk3x-i2c/bind
@@ -180,8 +212,8 @@ the service and force everything off.
 ## Testing
 
 ```bash
-python3 test-pwm.py                                  # 79 pure-logic checks
-ssh root@your-pi python3 - < test-hardware.py   # drives the real chip
+python3 test-pwm.py                              # 79 pure-logic checks, no hardware
+ssh root@your-pi python3 - < test-hardware.py    # 63 checks, drives the real chip
 ```
 
 `test-hardware.py` snapshots the whole PWM configuration and restores it in a
@@ -192,16 +224,21 @@ anywhere else and those skip.
 
 ## MCP server
 
-Exposes the API as tools for Claude Code. Registered in `~/.mcp.json`:
+Exposes the API as tools for Claude Code.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+Register it in `~/.mcp.json`, pointing `RELAY_PANEL_URL` at the panel — the
+default is `localhost`, which is only right if the MCP server runs on the Pi
+itself:
 
 ```json
 {"mcpServers": {"relay-panel": {
   "command": "/path/to/relay-panel/.venv/bin/python",
-  "args": ["/path/to/relay-panel/mcp-server.py"]}}}
-```
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+  "args": ["/path/to/relay-panel/mcp-server.py"],
+  "env": {"RELAY_PANEL_URL": "http://your-pi:8080"}}}}
 ```
 
 It is a thin HTTP client — it runs on the dev machine and nothing about it is

@@ -115,13 +115,13 @@ ck("materialize leaves an existing map alone", keep["channels"], {"5": {"name": 
 
 # --- I2C address conflicts -------------------------------------------------
 CFG = {
-    "boards": [{"address": "0x20", "bus": 2, "name": "Main Power"}],
+    "boards": [{"address": "0x20", "bus": 2, "name": "Bench Power"}],
     "pwm": [{"address": "0x40", "bus": 2, "name": "LED Strips"}],
 }
 ck("free address is free", rp.i2c_address_conflict(CFG, 2, "0x41"), None)
 ck("same address on another bus is free", rp.i2c_address_conflict(CFG, 3, "0x40"), None)
 ck("relay board address is refused",
-   "Main Power" in (rp.i2c_address_conflict(CFG, 2, "0x20") or ""), True)
+   "Bench Power" in (rp.i2c_address_conflict(CFG, 2, "0x20") or ""), True)
 ck("another PWM chip's address is refused",
    "LED Strips" in (rp.i2c_address_conflict(CFG, 2, "0x40") or ""), True)
 ck("a chip does not conflict with itself",
