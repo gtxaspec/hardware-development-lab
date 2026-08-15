@@ -18,7 +18,12 @@ mcp = FastMCP(
         "PWM channels are separate: a PCA9685 drives dimmable 12 V LED strips "
         "through MOSFET modules for camera day/night testing. Those are "
         "continuous, addressed by chip index + channel, and set with a level "
-        "(0-4095) or a percent (0-100), not on/off."
+        "(0-4095) or a percent (0-100), not on/off. Channels can be collected "
+        "into named groups driven by one master level. "
+        "Connected Ingenic USB devices (bootrom / DFU gadget) are also exposed "
+        "read-only, showing which bench devices are in a flashable state. "
+        "Adding, removing and re-addressing boards and PWM chips is deliberately "
+        "not exposed here - that is physical setup, done in the web UI."
     ),
 )
 
@@ -369,23 +374,93 @@ def add_led_group(chip: int, name: str, channels: list[int]) -> dict:
 
 
 @mcp.tool()
-def set_led_group_weights(chip: int, group: int, weights: dict) -> dict:
-    """Set per-channel weights for a group, to hold a colour balance on dimming.
+def edit_led_group(chip: int, group: int, name: str = "",
+                   channels: list[int] | None = None,
+                   weights: dict | None = None) -> dict:
+    """Rename a group, change which channels it drives, or set its weights.
 
-    Weights are 0-4095 and are the level each member sits at when the master is
-    full. Equal weights (the default) mean the master sets every member the
-    same. Keys are channel numbers as strings.
+    Any subset of the three may be given. Weights are 0-4095 and are the level
+    each member sits at when the master is full; equal weights (the default)
+    mean the master sets every member the same, unequal weights hold a colour
+    balance while dimming. Weight keys are channel numbers as strings.
 
     Args:
         chip: PWM chip index (0-based)
         group: Group index within that chip
+        name: New display name
+        channels: New membership, e.g. [1, 2, 3]
         weights: e.g. {"1": 4095, "2": 3200, "3": 2600}
     """
-    return api("PUT", "/api/pwm/group", {
+    body: dict = {"chip": chip, "group": group}
+    if name:
+        body["name"] = name
+    if channels is not None:
+        body["channels"] = channels
+    if weights is not None:
+        body["weights"] = weights
+    if len(body) == 2:
+        return {"error": "give at least one of name, channels or weights"}
+    return api("PUT", "/api/pwm/group", body)
+
+
+@mcp.tool()
+def set_led_phase(chip: int, channel: int, phase: int) -> dict:
+    """Set a channel's stagger phase: the count in the 4096-step cycle at which
+    it switches on.
+
+    Channels lit together default to a quarter-period stagger (0, 1024, 2048,
+    3072) so their on-times spread across the cycle instead of stacking at
+    count 0, which lowers both peak current draw and combined optical ripple.
+    Three channels driven as one white light spread best at exact thirds
+    (0, 1365, 2731). Re-applies at the channel's current duty.
+
+    Args:
+        chip: PWM chip index (0-based)
+        channel: Channel number
+        phase: Turn-on count, 0-4095
+    """
+    return api("PUT", "/api/pwm/phase", {
         "chip": chip,
-        "group": group,
-        "weights": weights,
+        "channel": channel,
+        "phase": phase,
     })
+
+
+@mcp.tool()
+def rename_led_chip(chip: int, name: str) -> dict:
+    """Rename a PWM chip. Use rename_led_channel for a single channel.
+
+    Args:
+        chip: PWM chip index (0-based)
+        name: New display name, e.g. "LED Strips"
+    """
+    return api("PUT", "/api/pwm/name", {"chip": chip, "name": name})
+
+
+@mcp.tool()
+def reset_led_chip(chip: int) -> dict:
+    """Re-initialize a PWM chip: wake it, re-enable auto-increment, re-apply the
+    configured frequency, and force every channel dark.
+
+    Use this if the chip is in an unknown state or stopped responding. The
+    relay-board equivalent is reset_board.
+
+    Args:
+        chip: PWM chip index (0-based)
+    """
+    return api("POST", "/api/pwm/reset", {"chip": chip})
+
+
+@mcp.tool()
+def list_usb() -> dict:
+    """List connected Ingenic USB devices (vendor a108), read fresh from sysfs.
+
+    These are the mask-ROM bootrom (a108:c309) and U-Boot's DFU gadget
+    (a108:4d44), so this shows which bench devices are currently sitting in a
+    flashable state. `port` is the sysfs bus-port path, stable per physical
+    socket. Read-only. The same list is included in list_relays.
+    """
+    return api("GET", "/api/usb")
 
 
 @mcp.tool()

@@ -60,13 +60,21 @@ def i2c_init_board(bus, addr):
 
 
 def i2c_read_state(bus, addr):
-    """Read current output register states. Returns (port_a, port_b) as ints."""
+    """Read current output register states. Returns (port_a, port_b) as ints.
+
+    Raises on a failed read rather than defaulting to zero. A wedged bus would
+    otherwise be indistinguishable from every relay being off, and on a bench
+    where relays feed camera power that is the last thing to report
+    confidently. get_full_state turns the exception into the board's `error`.
+    """
     with i2c_lock:
         out_a, rc_a = i2c_cmd("i2cget", bus, addr, "0x02")
         out_b, rc_b = i2c_cmd("i2cget", bus, addr, "0x03")
-    port_a = int(out_a, 16) if rc_a == 0 and out_a.startswith("0x") else 0
-    port_b = int(out_b, 16) if rc_b == 0 and out_b.startswith("0x") else 0
-    return port_a, port_b
+    ok_a = rc_a == 0 and out_a.startswith("0x")
+    ok_b = rc_b == 0 and out_b.startswith("0x")
+    if not (ok_a and ok_b):
+        raise RuntimeError(f"no response at {addr} on bus {bus}")
+    return int(out_a, 16), int(out_b, 16)
 
 
 def i2c_write_reg(bus, addr, reg, value):
@@ -716,7 +724,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
             board = config["boards"][board_idx]
-            new_state = toggle_relay(board["bus"], board["address"], relay_num)
+            try:
+                new_state = toggle_relay(board["bus"], board["address"], relay_num)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
             relay_name = board.get("relays", {}).get(str(relay_num), f"Relay {relay_num}")
             self.send_json({
                 "relay": relay_num,
@@ -734,7 +746,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
             board = config["boards"][board_idx]
-            set_relay(board["bus"], board["address"], relay_num, state)
+            try:
+                set_relay(board["bus"], board["address"], relay_num, state)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+                return
             relay_name = board.get("relays", {}).get(str(relay_num), f"Relay {relay_num}")
             self.send_json({
                 "relay": relay_num,
