@@ -109,10 +109,24 @@ def changed_files(pi):
 
 
 def preflight(pi, force):
-    conns = pi.run("ss -tn state established '( sport = :5050 )' | tail -n +2 | wc -l")
-    dfu = [u for u in pi.api("GET", "/api/usb").get("usb", []) if u.get("pid") == "4d44"]
+    """Refuse to restart the service while a device is being flashed.
+
+    Both signals are bench-specific: a flashing daemon's listening port, and
+    the USB product ID a device shows while sitting in DFU. Override via
+    RELAY_PANEL_FLASH_PORT / RELAY_PANEL_DFU_PID, or set the port to 0 and the
+    pid to an empty string to skip the check on a bench that does no flashing.
+    """
+    port = os.environ.get("RELAY_PANEL_FLASH_PORT", "5050")
+    pid = os.environ.get("RELAY_PANEL_DFU_PID", "4d44")
+
+    conns = "0"
+    if port and port != "0":
+        conns = pi.run(f"ss -tn state established '( sport = :{port} )' | tail -n +2 | wc -l")
+    dfu = ([u for u in pi.api("GET", "/api/usb").get("usb", []) if u.get("pid") == pid]
+           if pid else [])
     busy = conns != "0" or dfu
-    print(f"  dfu-remote connections {conns}, DFU gadgets {len(dfu)}")
+    print(f"  flash-daemon connections on :{port or 'off'} {conns}, "
+          f"DFU gadgets ({pid or 'off'}) {len(dfu)}")
     if busy and not force:
         sys.exit("ABORT: a flash looks to be in progress (--force to override)")
     if busy:

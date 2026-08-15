@@ -20,6 +20,101 @@ The PWM section exists to simulate day/night transitions for camera testing:
 continuous, repeatable light levels rather than the relay-binary room light the
 bench had before.
 
+## Sample topology
+
+One arrangement that works. Everything hangs off a single I²C bus plus a few
+GPIO pins, so the whole bench is three wires from the SBC.
+
+```
+  ┌─────────────────────────────────────────┐
+  │  Single-board computer                  │
+  │  Orange Pi 3B here; anything with I²C   │
+  │  relay-panel.py, port 8080              │
+  └──┬───────────────────────────┬──────────┘
+     │ I²C bus (SDA / SCL / GND) │ GPIO header pins, 3.3 V
+     │ 3.3 V logic               └──────► TS3USB30 1:2 USB mux
+     │                                    (select pin routes a device's
+     │                                     USB to one host or the other)
+     ├──────────────┬──────────────┬─────────────────┐
+  ┌──▼───────┐  ┌───▼──────┐  ┌────▼─────┐   ┌───────▼────────┐
+  │ XL9535   │  │ XL9535   │  │ XL9535   │   │   PCA9685      │
+  │  0x20    │  │  0x21    │  │  0x27    │   │    0x40        │
+  │ 16 relay │  │ 16 relay │  │ 16 relay │   │ 16 × 12-bit PWM│
+  └──┬───────┘  └───┬──────┘  └────┬─────┘   └───────┬────────┘
+     │              │              │                 │ 3.3 V gate drive
+     ▼              ▼              ▼                 ▼
+  device 5 V    device 12 V   boot-mode      ┌──────────────────┐
+  power rails   power rails   straps to GND  │ D4184 dual-MOSFET│ one module
+                                             │ trigger modules  │ per channel
+                                             └────────┬─────────┘
+                                                      │ switches the LOW side
+                                                      ▼
+                                             ┌──────────────────┐
+                                             │ 12 V LED strips  │
+                                             │ white + RGB      │
+                                             └──────────────────┘
+                                                      ▲
+                                             12 V PSU ┘ (+ to strip directly)
+```
+
+### Bill of materials
+
+| Part | Role | Notes |
+|---|---|---|
+| Single-board computer | Runs the panel | Needs I²C and, for the GPIO section, a `gpio` CLI |
+| **TS3USB30** 1-to-2 USB switch breakout | Routes a device's USB between two hosts | Driven from one GPIO. 3.3 V logic, so straight off the header |
+| **XL9535** 16-channel I²C relay board | Switches device power and boot-mode straps | Addresses `0x20`–`0x27` via jumpers, so up to 8 boards per bus |
+| **PCA9685** 16-channel PWM board | Dims the LED strips | Address `0x40`–`0x7F` via jumpers |
+| **D4184** dual-MOSFET trigger module (5–36 V, 15 A) | Power stage between PWM and strip | One per PWM channel. Low-side switching, rated to 20 kHz |
+| 12 V PSU | LED strips | Sized for total strip current |
+| 5 V / 12 V PSUs | Devices under test | Switched by the relay boards |
+| 12 V LED strips | The light source | White for luma work, RGB for colour |
+| 10 kΩ resistors | Gate pulldowns | One per MOSFET module, see below |
+
+### Wiring notes
+
+**Common ground everywhere.** SBC, relay boards, PCA9685, MOSFET modules and
+both PSUs. The MOSFET switches the low side, so its gate reference and the PWM
+reference have to be the same node or nothing works predictably.
+
+**10 kΩ pulldown from each MOSFET module's signal input to GND.** The PCA9685's
+outputs are undriven until it is configured, so without this the gates float
+during boot and the strips flash on. Firmware cannot fix a state that exists
+before firmware runs.
+
+**Leave the PCA9685's `V+` pin unconnected.** It only matters if you drive LEDs
+from the chip directly. Driving MOSFET gates, the logic supply is all it needs.
+
+**I²C pull-ups.** Most breakout boards include them. Several boards on one bus
+means several pull-ups in parallel — if the bus misbehaves, that is the first
+thing to check.
+
+**The relay board's logic supply and its relay coil supply may differ.** Common
+boards want 5 V for the coils while accepting 3.3 V logic. Check before wiring.
+
+**A USB mux is a select, not a power switch.** The TS3USB30's select pin routes
+the device's data lines to one of two downstream ports, so the panel's `on` /
+`off` for that GPIO means "port B" / "port A", not "USB energized" / "USB dead".
+Name the GPIO after what selecting it *does* — the config's `name` is free text
+for exactly this. The breakout also has an active-low `OE`; tie it low unless
+you want a third, genuinely-disconnected state, in which case give it its own
+GPIO.
+
+### Worth adding for day/night work
+
+Not required, but this rig is noticeably better with them:
+
+- **A diffuser.** Bounce off a white card rather than pointing the camera at the
+  strip. Direct view of LED point sources saturates pixels and gives auto-exposure
+  statistics that mean nothing.
+- **A lux sensor** (TSL2591 or VEML7700) on the same I²C bus, in the scene.
+  Without independent ground truth the rig cannot tell "the camera changed" from
+  "the rig drifted".
+- **An 850 nm IR strip** on a spare channel. Neither a white nor an RGB strip
+  emits IR, so this rig can drive a camera *into* night mode by going dark, but
+  cannot reproduce an IR-illuminated night scene.
+- **A fuse on the 12 V rail**, sized under the strip's total draw.
+
 ## Layout
 
 ```
@@ -95,6 +190,49 @@ Then open `http://your-pi:8080` and add your boards, GPIOs and PWM chips from
 the web UI. Nothing else needs editing — the config is built through the UI, not
 checked in.
 
+### Porting to other hardware
+
+The code shells out to `i2cget`/`i2cset`/`i2cdump` and the `gpio` CLI, so most
+of what varies between benches is outside this repo. What to check:
+
+**Relay polarity — check this first.** The code treats a HIGH output as
+energized. Many cheap relay modules are the opposite: they energize on a LOW.
+On such a board every control inverts, and worse, startup writes `0x00` to the
+output registers meaning to turn everything off, which would instead switch
+everything **on**. There is no invert option yet. Verify your board's polarity
+with a single relay before wiring anything that matters to it.
+
+**The `gpio` CLI.** wiringOP on Orange Pi is a fork of Gordon Henderson's
+WiringPi, so the verbs this code uses — `gpio mode <n> out`, `gpio write <n>
+0|1`, `gpio read <n>` — are identical on both. **The pin numbers are not.** A
+wiringPi number maps to different physical pins on different boards: wPi 27 is
+physical pin 40 on an Orange Pi 3B and physical pin 36 on a Raspberry Pi. Run
+`gpio readall` on your own board and use its numbers; the `pin` field in the
+config is a display-only label, nothing is derived from it.
+
+Note also that upstream WiringPi was deprecated in 2019 and recent Raspberry Pi
+OS releases ship `libgpiod` (`gpioset`/`gpioget`) or `pinctrl` instead, so
+`gpio` may not exist at all. Either install a maintained WiringPi fork or adapt
+`gpio_cmd()` — it is the single function every GPIO call goes through.
+
+**Relay expander family.** The relay code assumes a PCA9555/XL9535/TCA9535-style
+16-bit expander: configuration at `0x06`/`0x07`, output at `0x02`/`0x03`. A
+PCF8574 has no register file at all and will not work without changes.
+
+**I²C bus number and addresses** are whatever your wiring and jumpers are; find
+them with `i2cdetect -l` and `i2cdetect -y -r <bus>`.
+
+**Python** 3.6+ for the server, which is pure standard library. `mcp-server.py`
+needs 3.10+ for its type annotations.
+
+**Permissions.** I²C and GPIO access needs root or membership of the `i2c` and
+`gpio` groups. The systemd unit sets no `User=`, so it runs as root.
+
+**`deploy.py`'s flash check** looks for connections to port 5050 and a USB
+device with product ID `4d44`, which is this bench's flashing setup. Point
+`RELAY_PANEL_FLASH_PORT` / `RELAY_PANEL_DFU_PID` at your own, or set the port to
+`0` and the pid to empty to skip the check.
+
 ### Environment variables
 
 All optional; the defaults suit a normal install.
@@ -107,6 +245,8 @@ All optional; the defaults suit a normal install.
 | `RELAY_PANEL_USB_VID` | `a108` (Ingenic) | server: which USB vendor the USB section watches |
 | `RELAY_PANEL_URL` | `http://localhost:8080` | MCP server: where the panel is |
 | `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target, usually set in `.env` |
+| `RELAY_PANEL_FLASH_PORT` | `5050` | `deploy.py`: flashing daemon's port; `0` disables |
+| `RELAY_PANEL_DFU_PID` | `4d44` | `deploy.py`: USB pid meaning "in DFU"; empty disables |
 
 `config.json` and `.env` are the only site-specific files, and both are
 gitignored — nothing in version control names a particular machine.
