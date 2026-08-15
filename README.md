@@ -44,10 +44,14 @@ what the bench is actually doing rather than what it was last told.
 ## Deploying
 
 ```bash
-export RELAY_PANEL_SSH=root@your-pi   # or pass --host every time
+cp .env.example .env     # set RELAY_PANEL_SSH=root@your-pi, gitignored
 ./deploy.py              # copy what changed, restart only if needed
 ./deploy.py --dry-run    # show what would be copied
 ```
+
+`.env` is how a checkout remembers which bench it belongs to without the
+hostname reaching version control. A real environment variable, or `--host`,
+overrides it for a one-off.
 
 Read this before deploying by hand:
 
@@ -102,7 +106,10 @@ All optional; the defaults suit a normal install.
 | `RELAY_PANEL_PORT` | `8080` | server: listen port |
 | `RELAY_PANEL_USB_VID` | `a108` (Ingenic) | server: which USB vendor the USB section watches |
 | `RELAY_PANEL_URL` | `http://localhost:8080` | MCP server: where the panel is |
-| `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target |
+| `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target, usually set in `.env` |
+
+`config.json` and `.env` are the only site-specific files, and both are
+gitignored — nothing in version control names a particular machine.
 
 ## Configuration
 

@@ -12,7 +12,7 @@ so this script:
   4. restores the snapshot and verifies it, rather than assuming.
 
 Usage:
-    export RELAY_PANEL_SSH=root@your-pi
+    echo RELAY_PANEL_SSH=root@your-pi > .env    # gitignored, remembered
     ./deploy.py                 # deploy whatever changed
     ./deploy.py --host root@other-pi
     ./deploy.py --dry-run       # show what would be copied
@@ -39,6 +39,24 @@ FILES = [
 ]
 
 
+def load_env_file():
+    """Read site config from a gitignored .env beside this script.
+
+    Lets a checkout remember which bench it belongs to without the hostname
+    ending up in version control. A real environment variable wins over the
+    file, so a one-off override still works.
+    """
+    f = REPO / ".env"
+    if not f.exists():
+        return
+    for line in f.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def sh(cmd, check=True):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if check and r.returncode != 0:
@@ -54,6 +72,19 @@ class Pi:
         # -n matters: without it ssh consumes the caller's stdin, which
         # silently truncates any loop feeding this method
         return sh(f"ssh -n {self.host} {json.dumps(cmd)}", check)
+
+    def check_reachable(self):
+        """Fail early and clearly on an unreachable host.
+
+        Without this, every remote checksum comes back empty, every file looks
+        changed, and the run only falls over later at the scp - which reads as
+        a deploy problem rather than the typo in the hostname that it is.
+        """
+        r = subprocess.run(
+            f"ssh -n -o BatchMode=yes -o ConnectTimeout=10 {self.host} true",
+            shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"cannot reach {self.host}: {r.stderr.strip() or 'ssh failed'}")
 
     def api(self, method, path, body=None):
         c = f"curl -s -X {method} -H 'Content-Type: application/json'"
@@ -163,6 +194,7 @@ def verify(pi, snap):
 
 
 def main():
+    load_env_file()          # before the parser, whose defaults read os.environ
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=os.environ.get("RELAY_PANEL_SSH"),
@@ -175,6 +207,7 @@ def main():
     if not args.host:
         ap.error("no target: pass --host or set RELAY_PANEL_SSH")
     pi = Pi(args.host)
+    pi.check_reachable()
 
     print("== changes ==")
     todo = changed_files(pi)
