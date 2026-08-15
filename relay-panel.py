@@ -663,6 +663,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 "gpios": gpios,
                 "pwm": get_pwm_state(config),
                 "usb": get_usb_devices(),
+                # so the UI can label the section with the vendor actually
+                # being watched rather than assuming the default
+                "usb_vid": USB_VID_FILTER,
             })
             return
 
@@ -677,7 +680,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/usb":
-            self.send_json({"usb": get_usb_devices()})
+            self.send_json({"usb": get_usb_devices(), "vid": USB_VID_FILTER})
             return
 
         # Serve static files

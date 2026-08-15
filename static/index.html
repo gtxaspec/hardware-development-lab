@@ -1573,11 +1573,12 @@ function renderUsbSection() {
       <div class="usb-detail mono" title="S/N ${escAttr(sn)}"${snStyle}>S/N ${escHtml(sn)}</div>
     </div>`;
   }).join('');
-  const empty = '<div class="loading" style="min-height:60px;font-size:0.875rem">No Ingenic (a108) devices connected</div>';
+  const vid = state.usb_vid || 'a108';
+  const empty = `<div class="loading" style="min-height:60px;font-size:0.875rem">No ${escHtml(vid)} devices connected</div>`;
   return `<div class="board-section usb-section">
     <div class="board-header">
       <span class="board-name">USB Boot Devices</span>
-      <span class="board-addr">idVendor a108 · ${devs.length} connected</span>
+      <span class="board-addr">idVendor ${escHtml(vid)} · ${devs.length} connected</span>
     </div>
     ${devs.length ? `<div class="relay-grid">${cards}</div>` : empty}
   </div>`;
