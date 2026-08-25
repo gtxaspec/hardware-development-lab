@@ -8,7 +8,7 @@ import socket
 import subprocess
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -654,6 +654,11 @@ def get_full_state(config):
 
 class RelayHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the relay control panel."""
+
+    # Drop a client that stalls mid-request instead of holding its thread
+    # open indefinitely - a backgrounded mobile browser on a slow link will
+    # otherwise sit in the middle of a request for as long as it likes.
+    timeout = 30
 
     def log_message(self, format, *args):
         """Suppress default logging."""
@@ -1794,7 +1799,7 @@ def init_pwm(config):
             print(f"  Failed to init PWM at {chip['address']}: {e}")
 
 
-class DualStackHTTPServer(HTTPServer):
+class DualStackHTTPServer(ThreadingHTTPServer):
     """HTTP server on a dual-stack socket.
 
     IPV6_V6ONLY is cleared so a single socket serves both families: IPv4
@@ -1806,7 +1811,7 @@ class DualStackHTTPServer(HTTPServer):
 
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        HTTPServer.server_bind(self)
+        ThreadingHTTPServer.server_bind(self)
 
 
 def main():
@@ -1832,7 +1837,7 @@ def main():
     init_pwm(config)
 
     # An explicitly IPv4 RELAY_PANEL_HOST still gets a plain v4 socket.
-    server_cls = DualStackHTTPServer if ":" in LISTEN_HOST else HTTPServer
+    server_cls = DualStackHTTPServer if ":" in LISTEN_HOST else ThreadingHTTPServer
     server = server_cls((LISTEN_HOST, LISTEN_PORT), RelayHandler)
     shown = f"[{LISTEN_HOST}]" if ":" in LISTEN_HOST else LISTEN_HOST
     print(f"Relay Control Panel running on http://{shown}:{LISTEN_PORT}")
