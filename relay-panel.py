@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Relay Control Panel - Web interface for XL9535 I2C relay boards."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ from urllib.parse import urlparse
 
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
+TOKENS_FILE = BASE_DIR / "tokens.json"
 STATIC_DIR = BASE_DIR / "static"
 LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
@@ -42,6 +44,26 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def load_tokens():
+    """Load the dev-token permission map: sha256(token) -> {"allowed": {...}}.
+
+    Missing or malformed is treated as "no tokens configured" rather than an
+    error, so a bench with none set up behaves exactly as it always has.
+    """
+    if not TOKENS_FILE.exists():
+        return {}
+    try:
+        with open(TOKENS_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data.get("tokens", {}) if isinstance(data, dict) else {}
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def i2c_cmd(cmd, bus, addr, *args):
@@ -650,6 +672,87 @@ class RelayHandler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length))
         return {}
 
+    def _token_scope(self):
+        """Resolve the Authorization header to an access scope.
+
+        Returns (True, None) when unrestricted (no token presented - the
+        access every request had before this existed), (True, allowed) for a
+        recognized token limited to `allowed`, or (False, None) for a header
+        that names no known token.
+        """
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return True, None
+        token = auth[len("Bearer "):].strip()
+        entry = load_tokens().get(hash_token(token))
+        if entry is None:
+            return False, None
+        return True, entry.get("allowed", {})
+
+    def forbidden(self):
+        self.send_json({"error": "forbidden"}, 403)
+
+    def authorize_relay(self, board, relay):
+        """One relay. Also covers renaming a relay the token already controls."""
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        return any(e.get("board") == board and e.get("relay") == relay
+                    for e in allowed.get("relays", []))
+
+    def authorize_board_bulk(self, board, size):
+        """Whole-board actions (all/reset): every relay on it must be granted."""
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        granted = {e.get("relay") for e in allowed.get("relays", [])
+                   if e.get("board") == board}
+        return granted.issuperset(range(size))
+
+    def authorize_gpio(self, wpi):
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        return wpi in allowed.get("gpios", [])
+
+    def authorize_pwm_channel(self, chip, channel):
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        return any(e.get("chip") == chip and e.get("channel") == channel
+                    for e in allowed.get("pwm", []))
+
+    def authorize_pwm_channels(self, chip, channels):
+        """Multi-channel actions (all/off/group): every channel touched must be granted."""
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        granted = {e.get("channel") for e in allowed.get("pwm", [])
+                   if e.get("chip") == chip}
+        return granted.issuperset(channels)
+
+    def authorize_owner_only(self):
+        """Structural/config actions (add, remove, rescope, move, resize, ...).
+
+        These reshape the bench itself rather than operate a granted device,
+        so no token allow-list can grant them - only unrestricted (no token)
+        access can.
+        """
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        return allowed is None
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -715,6 +818,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path == "/api/relay/toggle":
             board_idx = body.get("board", 0)
             relay_num = body.get("relay", 0)
+            if not self.authorize_relay(board_idx, relay_num):
+                self.forbidden()
+                return
             config = load_config()
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
@@ -737,6 +843,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             board_idx = body.get("board", 0)
             relay_num = body.get("relay", 0)
             state = body.get("state", False)
+            if not self.authorize_relay(board_idx, relay_num):
+                self.forbidden()
+                return
             config = load_config()
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
@@ -763,6 +872,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
             board = config["boards"][board_idx]
+            if not self.authorize_board_bulk(board_idx, board["size"]):
+                self.forbidden()
+                return
             set_all(board["bus"], board["address"], board["size"], state)
             self.send_json({
                 "board": board_idx,
@@ -772,6 +884,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/api/boards":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             # Add a new board
             addr = body.get("address", "0x21")
             bus = body.get("bus", 2)
@@ -801,6 +916,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == "/api/gpios":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             # Add a new GPIO
             try:
                 wpi = int(body.get("wpi"))
@@ -843,6 +961,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json({"error": "wpi is required"}, 400)
                 return
+            if not self.authorize_gpio(wpi):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
@@ -874,6 +995,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "wpi is required"}, 400)
                 return
             state = bool(body.get("state", False))
+            if not self.authorize_gpio(wpi):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
@@ -910,6 +1034,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not isinstance(ch, int) or chip_idx >= len(chips):
                 self.send_json({"error": "Invalid chip or channel"}, 400)
                 return
+            if not self.authorize_pwm_channel(chip_idx, ch):
+                self.forbidden()
+                return
             chip = chips[chip_idx]
             if ch not in pca_enabled_channels(chip):
                 self.send_json({"error": f"Channel {ch} is not configured on this chip"}, 400)
@@ -941,6 +1068,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             chip = chips[chip_idx]
             enabled = pca_enabled_channels(chip)
+            if not self.authorize_pwm_channels(chip_idx, enabled):
+                self.forbidden()
+                return
             try:
                 if level == 0:
                     pca_all_off(chip["bus"], chip["address"])
@@ -964,6 +1094,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             chips = config.get("pwm", [])
             chip_idx = body.get("chip")
             targets = list(range(len(chips))) if chip_idx is None else [chip_idx]
+            if not all(self.authorize_pwm_channels(i, pca_enabled_channels(chips[i]))
+                       for i in targets if i < len(chips)):
+                self.forbidden()
+                return
             errors = []
             for i in targets:
                 if i >= len(chips):
@@ -995,6 +1129,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid group"}, 400)
                 return
             gname, gch, gweights = pca_group_cfg(chip, gi)
+            if not self.authorize_pwm_channels(chip_idx, gch):
+                self.forbidden()
+                return
             targets = group_levels_for(gch, gweights, level)
             try:
                 for ch, lvl in targets.items():
@@ -1013,6 +1150,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/api/pwm/groups":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             name = body.get("name") or "Group"
             channels = body.get("channels")
@@ -1038,6 +1178,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "group": len(chip["groups"]) - 1})
 
         elif path == "/api/pwm/channels":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             try:
                 ch = int(body.get("channel"))
@@ -1077,6 +1220,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "channel": ch, "name": name})
 
         elif path == "/api/pwm/reset":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             config = load_config()
             chips = config.get("pwm", [])
@@ -1093,6 +1239,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == "/api/pwm":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             addr = body.get("address", "0x40")
             bus = body.get("bus", 2)
             size = body.get("size", 16)
@@ -1127,6 +1276,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
             board = config["boards"][board_idx]
+            if not self.authorize_board_bulk(board_idx, board["size"]):
+                self.forbidden()
+                return
             try:
                 i2c_init_board(board["bus"], board["address"])
                 set_all(board["bus"], board["address"], board["size"], False)
@@ -1146,6 +1298,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             board_idx = body.get("board", 0)
             relay_num = body.get("relay", 0)
             name = body.get("name", "")
+            if not self.authorize_relay(board_idx, relay_num):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 if board_idx >= len(config["boards"]):
@@ -1159,6 +1314,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == "/api/board/name":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             board_idx = body.get("board", 0)
             name = body.get("name", "")
             with config_lock:
@@ -1177,6 +1335,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "wpi is required"}, 400)
                 return
             name = body.get("name", "")
+            if not self.authorize_gpio(wpi):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
@@ -1201,6 +1362,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self.send_json({"error": "pin must be an integer"}, 400)
                     return
+            if not self.authorize_gpio(wpi):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 entry = next((g for g in config["gpios"] if g["wpi"] == wpi), None)
@@ -1215,6 +1379,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             chip_idx = body.get("chip", 0)
             ch = body.get("channel")
             name = body.get("name", "")
+            if ch is None:
+                if not self.authorize_owner_only():
+                    self.forbidden()
+                    return
+            elif not self.authorize_pwm_channel(chip_idx, ch):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 if chip_idx >= len(config.get("pwm", [])):
@@ -1233,6 +1404,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == "/api/pwm/group":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             gi = body.get("group", 0)
             with config_lock:
@@ -1281,6 +1455,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/api/pwm/settings":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             with config_lock:
                 config = load_config()
@@ -1319,6 +1496,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "address": new_addr, "bus": new_bus, "moved": moved})
 
         elif path == "/api/pwm/freq":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             chip_idx = body.get("chip", 0)
             try:
                 freq = float(body.get("freq_hz"))
@@ -1355,6 +1535,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json({"error": "phase (0-4095) is required"}, 400)
                 return
+            if not self.authorize_pwm_channel(chip_idx, ch):
+                self.forbidden()
+                return
             with config_lock:
                 config = load_config()
                 if chip_idx >= len(config.get("pwm", [])) or ch is None:
@@ -1382,6 +1565,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "phase": phase})
 
         elif path == "/api/board/layout":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             board_idx = body.get("board", 0)
             layout = body.get("layout", "grid")
             with config_lock:
@@ -1394,6 +1580,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == "/api/board/flip":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             board_idx = body.get("board", 0)
             with config_lock:
                 config = load_config()
@@ -1405,6 +1594,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"flipped": config["boards"][board_idx]["flipped"]})
 
         elif path == "/api/board/settings":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return
             board_idx = body.get("board", 0)
             with config_lock:
                 config = load_config()
@@ -1445,6 +1637,9 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if not self.authorize_owner_only():
+            self.forbidden()
+            return
 
         if path.startswith("/api/boards/"):
             try:

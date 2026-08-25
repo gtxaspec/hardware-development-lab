@@ -4,9 +4,11 @@ __pycache__/
 .venv/
 
 # Site-specific, never committed: config.json describes one physical bench
-# and is written by the API, .env names the machine to deploy to.
+# and is written by the API, .env names the machine to deploy to, tokens.json
+# holds hashed dev-access bearer tokens.
 config.json
 .env
+tokens.json
 
 # Editor and OS noise
 .DS_Store
