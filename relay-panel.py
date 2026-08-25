@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -15,7 +16,7 @@ BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
 TOKENS_FILE = BASE_DIR / "tokens.json"
 STATIC_DIR = BASE_DIR / "static"
-LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "0.0.0.0")
+LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "::")
 LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
 
 USB_SYS_PATH = Path("/sys/bus/usb/devices")
@@ -1793,6 +1794,21 @@ def init_pwm(config):
             print(f"  Failed to init PWM at {chip['address']}: {e}")
 
 
+class DualStackHTTPServer(HTTPServer):
+    """HTTP server on a dual-stack socket.
+
+    IPV6_V6ONLY is cleared so a single socket serves both families: IPv4
+    callers arrive as v4-mapped addresses, so existing http://<v4>:8080
+    users are unaffected.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        HTTPServer.server_bind(self)
+
+
 def main():
     config = load_config()
     if not config["boards"]:
@@ -1815,8 +1831,11 @@ def main():
     print("Initializing PWM...")
     init_pwm(config)
 
-    server = HTTPServer((LISTEN_HOST, LISTEN_PORT), RelayHandler)
-    print(f"Relay Control Panel running on http://{LISTEN_HOST}:{LISTEN_PORT}")
+    # An explicitly IPv4 RELAY_PANEL_HOST still gets a plain v4 socket.
+    server_cls = DualStackHTTPServer if ":" in LISTEN_HOST else HTTPServer
+    server = server_cls((LISTEN_HOST, LISTEN_PORT), RelayHandler)
+    shown = f"[{LISTEN_HOST}]" if ":" in LISTEN_HOST else LISTEN_HOST
+    print(f"Relay Control Panel running on http://{shown}:{LISTEN_PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
