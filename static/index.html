@@ -828,6 +828,17 @@ body.edit-mode .board-name { cursor: pointer; }
   </div>
 </div>
 
+<div id="tokenBar" style="display:none;align-items:center;gap:.6rem;flex-wrap:wrap;
+     margin:0 1rem 1rem;padding:.7rem .9rem;border-radius:8px;
+     background:#3a2a12;border:1px solid #7a5a20;color:#f0d9a8;font-size:.9rem">
+  <span id="tokenMsg">This network needs an access token to make changes.</span>
+  <input id="tokenInput" type="password" placeholder="Access token" autocomplete="off"
+         style="flex:1;min-width:12rem;padding:.4rem .6rem;border-radius:6px;
+                border:1px solid #7a5a20;background:#241a0c;color:#f0d9a8">
+  <button class="btn-surface btn-sm" onclick="saveToken()">Save</button>
+  <button class="btn-surface btn-sm" onclick="clearToken()" title="Forget the stored token">Clear</button>
+</div>
+
 <div class="boards-container" id="boards"></div>
 
 <div class="keyboard-hint">
@@ -951,11 +962,62 @@ function toggleEditMode() {
 }
 
 // --- API ---
+// Callers off the trusted network (a VPN guest, say) must present a token to
+// change anything; the panel answers 403 otherwise. Held per browser, never
+// sent anywhere but this panel.
+let apiToken = '';
+try { apiToken = localStorage.getItem('relay_panel_token') || ''; } catch (e) { apiToken = ''; }
+
+function setApiToken(tok) {
+  apiToken = (tok || '').trim();
+  try {
+    if (apiToken) localStorage.setItem('relay_panel_token', apiToken);
+    else localStorage.removeItem('relay_panel_token');
+  } catch (e) { /* private browsing - token lasts for this page only */ }
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (apiToken) opts.headers['Authorization'] = 'Bearer ' + apiToken;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 403) {
+    showTokenPrompt(data && data.error === 'forbidden');
+    return data;
+  }
+  return data;
+}
+
+// Shown when the panel refuses an action: either no token from an untrusted
+// network, or a token that does not cover the thing being driven.
+function showTokenPrompt(hasToken) {
+  const el = document.getElementById('tokenBar');
+  if (!el) return;
+  el.style.display = 'flex';
+  const msg = document.getElementById('tokenMsg');
+  if (msg) {
+    msg.textContent = apiToken
+      ? 'That control is outside your token’s scope.'
+      : 'This network needs an access token to make changes.';
+  }
+}
+
+function saveToken() {
+  const el = document.getElementById('tokenInput');
+  setApiToken(el ? el.value : '');
+  if (el) el.value = '';
+  if (apiToken) {
+    const bar = document.getElementById('tokenBar');
+    if (bar) bar.style.display = 'none';
+  }
+  fetchState();
+}
+
+function clearToken() {
+  setApiToken('');
+  const msg = document.getElementById('tokenMsg');
+  if (msg) msg.textContent = 'Token cleared.';
 }
 
 async function fetchState() {

@@ -2,6 +2,7 @@
 """Relay Control Panel - Web interface for XL9535 I2C relay boards."""
 
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -18,6 +19,20 @@ TOKENS_FILE = BASE_DIR / "tokens.json"
 STATIC_DIR = BASE_DIR / "static"
 LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "::")
 LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
+
+# Callers allowed to act without a token, i.e. with full control of the bench.
+# Defaults to loopback and private addressing, on the assumption that the panel
+# is only routable from a network you own. Expose it any further - a VPN for an
+# outside collaborator, say - and set RELAY_PANEL_TRUSTED to just the ranges
+# that should keep unrestricted access; everyone else then needs a token.
+TRUSTED_NETS = [
+    ipaddress.ip_network(n.strip())
+    for n in os.environ.get(
+        "RELAY_PANEL_TRUSTED",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7",
+    ).split(",")
+    if n.strip()
+]
 
 USB_SYS_PATH = Path("/sys/bus/usb/devices")
 # Which USB vendor to watch for. Defaults to Ingenic, whose bootrom (a108:c309)
@@ -65,6 +80,23 @@ def load_tokens():
 
 def hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def client_is_trusted(addr):
+    """Whether a caller may act without presenting a token.
+
+    Going tokenless means full control of the bench, so it is granted by
+    where the request came from, never by the request merely declining to
+    identify itself. Anything outside TRUSTED_NETS - a VPN guest, say -
+    must present a token and is held to that token's scope.
+    """
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in TRUSTED_NETS)
 
 
 def i2c_cmd(cmd, bus, addr, *args):
@@ -681,14 +713,14 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _token_scope(self):
         """Resolve the Authorization header to an access scope.
 
-        Returns (True, None) when unrestricted (no token presented - the
-        access every request had before this existed), (True, allowed) for a
-        recognized token limited to `allowed`, or (False, None) for a header
-        that names no known token.
+        Returns (True, None) when unrestricted - no token presented, from a
+        trusted source - (True, allowed) for a recognized token limited to
+        `allowed`, or (False, None) for a header that names no known token,
+        or for an untrusted caller presenting none at all.
         """
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            return True, None
+            return (True, None) if client_is_trusted(self.client_address[0]) else (False, None)
         token = auth[len("Bearer "):].strip()
         entry = load_tokens().get(hash_token(token))
         if entry is None:
