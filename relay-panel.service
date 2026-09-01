@@ -4,6 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
+# Python block-buffers stdout when it is a pipe, so without this the startup
+# banner and every "failed to init" line sits in a buffer the journal never
+# sees - which is how a PWM chip that came up wrong stayed invisible.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/relay-panel/relay-panel.py
 WorkingDirectory=/opt/relay-panel
 Restart=on-failure

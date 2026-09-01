@@ -378,7 +378,11 @@ def pca_set_freq(bus, addr, freq_hz):
     with i2c_lock:
         cur, rc = i2c_cmd("i2cget", bus, addr, hex(PCA_MODE1))
         mode1 = int(cur, 16) if rc == 0 and cur.startswith("0x") else PCA_M1_AI
-        base = mode1 & ~PCA_M1_RESTART & 0xFF
+        # Carry the chip's own MODE1 forward, but never its auto-increment bit.
+        # A chip that reset to defaults reads back AI=0, and preserving that
+        # would leave every later 4-byte channel write collapsing onto
+        # LEDn_ON_L, so forcing it on here makes a frequency change a repair.
+        base = (mode1 | PCA_M1_AI) & ~PCA_M1_RESTART & 0xFF
         i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(base | PCA_M1_SLEEP))
         i2c_cmd("i2cset", bus, addr, hex(PCA_PRESCALE), hex(ps))
         i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(base & ~PCA_M1_SLEEP))
@@ -388,12 +392,38 @@ def pca_set_freq(bus, addr, freq_hz):
     return ps, pca_freq_for(ps)
 
 
+def pca_set_mode1_ai(bus, addr, keep=0):
+    """Set MODE1 with auto-increment on, preserving `keep`. Returns the readback.
+
+    Every channel write is a 4-byte block starting at LEDn_ON_L, which only
+    lands on four registers while AI is set; with AI clear the chip drops all
+    four bytes onto LEDn_ON_L alone, so the FULL_OFF flag in LEDn_OFF_H is
+    never cleared and the channel stays dark. The write is still ACKed, so
+    nothing downstream can tell - which is why this reads MODE1 back rather
+    than trusting the write.
+    """
+    with i2c_lock:
+        i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1),
+                hex((keep | PCA_M1_AI) & ~PCA_M1_SLEEP & ~PCA_M1_RESTART & 0xFF))
+        cur, rc = i2c_cmd("i2cget", bus, addr, hex(PCA_MODE1))
+    if rc != 0 or not cur.startswith("0x"):
+        raise RuntimeError(f"MODE1 readback failed at {addr} on bus {bus}: {cur}")
+    return int(cur, 16)
+
+
 def pca_init(bus, addr, freq_hz):
     """Wake the chip, enable auto-increment, set frequency, all channels off."""
     with i2c_lock:
         # totem-pole non-inverting: output high turns a MOSFET module's gate on
-        i2c_cmd("i2cset", bus, addr, hex(PCA_MODE2), "0x04")
-        i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(PCA_M1_AI))
+        out, rc = i2c_cmd("i2cset", bus, addr, hex(PCA_MODE2), "0x04")
+    if rc != 0:
+        raise RuntimeError(f"pwm MODE2 write failed: {out}")
+    # Verified, not assumed: an unchecked MODE1 write that NAKs during a bus
+    # wobble leaves AI clear for the life of the process, and from then on
+    # every set reports success while the strips stay dark.
+    mode1 = pca_set_mode1_ai(bus, addr)
+    if not mode1 & PCA_M1_AI:
+        raise RuntimeError(f"pwm auto-increment did not stick (MODE1={mode1:#04x})")
     pca_all_off(bus, addr)
     # RESTART at the end of pca_set_freq resumes the pre-sleep duty, so the
     # all-off above is what makes the restart land on "dark" rather than on
@@ -531,6 +561,18 @@ def get_pwm_state(config):
         addr = chip["address"]
         enabled = pca_enabled_channels(chip)
         regs = pca_dump(bus, addr)
+        # The poll already holds MODE1, so it is the cheapest place to notice
+        # that a glitch reset the chip and put auto-increment back before the
+        # next write silently no-ops. Repairing state during a read is worth
+        # it here: the alternative is a bench that lies about its lights.
+        if regs and not regs[PCA_MODE1] & PCA_M1_AI:
+            try:
+                pca_set_mode1_ai(bus, addr, keep=regs[PCA_MODE1])
+                print(f"  PWM {addr} on bus {bus}: re-enabled auto-increment "
+                      f"(MODE1 was {regs[PCA_MODE1]:#04x})")
+                regs = pca_dump(bus, addr) or regs
+            except Exception as e:
+                print(f"  PWM {addr} on bus {bus}: auto-increment repair failed: {e}")
         prescale = regs[PCA_PRESCALE] if regs else 0
         channels = []
         for ch in enabled:

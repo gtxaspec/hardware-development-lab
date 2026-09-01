@@ -8,7 +8,7 @@ __pycache__/
 # holds hashed dev-access bearer tokens.
 config.json
 .env
-tokens.json
+tokens.json*
 
 # Editor and OS noise
 .DS_Store
