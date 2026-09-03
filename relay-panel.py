@@ -180,6 +180,10 @@ def i2c_cmd(cmd, bus, addr, *args, timeout=BUS_TIMEOUT):
     try:
         result = subprocess.run(full_cmd, capture_output=True, text=True,
                                 timeout=timeout)
+        if result.returncode != 0:
+            # i2cget/i2cset report the reason on stderr; returning only stdout
+            # left callers printing "write failed:" with nothing after it.
+            return (result.stderr.strip() or result.stdout.strip()), result.returncode
         return result.stdout.strip(), result.returncode
     except Exception as e:
         return str(e), 1
@@ -267,6 +271,8 @@ def gpio_cmd(*args, timeout=BUS_TIMEOUT):
     try:
         result = subprocess.run(full_cmd, capture_output=True, text=True,
                                 timeout=timeout)
+        if result.returncode != 0:
+            return (result.stderr.strip() or result.stdout.strip()), result.returncode
         return result.stdout.strip(), result.returncode
     except Exception as e:
         return str(e), 1
@@ -490,8 +496,28 @@ def pca_set_mode1_ai(bus, addr, keep=0):
     return int(cur, 16)
 
 
-def pca_init(bus, addr, freq_hz):
-    """Wake the chip, enable auto-increment, set frequency, all channels off."""
+def pca_init(bus, addr, freq_hz, attempts=3):
+    """Wake the chip, enable auto-increment, set frequency, all channels off.
+
+    Retried because a single write here has been seen to fail at startup on an
+    otherwise healthy bus, and giving up on one NAK leaves the chip asleep at
+    the wrong frequency with auto-increment clear. The poll's repair only
+    covers auto-increment, so the rest has to be got right here.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            pca_init_once(bus, addr, freq_hz)
+            return
+        except RuntimeError as e:
+            if attempt == attempts:
+                raise
+            print(f"  PWM {addr} on bus {bus}: init attempt {attempt} "
+                  f"failed ({e}), retrying")
+            time.sleep(0.2)
+
+
+def pca_init_once(bus, addr, freq_hz):
+    """One attempt at the init sequence. Raises on any failed write."""
     with i2c_lock:
         # totem-pole non-inverting: output high turns a MOSFET module's gate on
         out, rc = i2c_cmd("i2cset", bus, addr, hex(PCA_MODE2), "0x04")
