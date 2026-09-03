@@ -69,7 +69,13 @@ curl -s -X POST -H 'Content-Type: application/json' \
   $PANEL/api/relay/set
 ```
 
-Response: `{"state": true}` or `{"state": false}`
+Request `state` is a boolean. The strings `"on"`/`"off"` (also
+`true`/`false`, `1`/`0`, `yes`/`no`) are accepted too; anything else is a 400
+rather than a guess, because `bool("off")` is true and guessing once meant
+switching a relay on when asked to switch it off.
+
+Response: `{"relay": 5, "name": "...", "state": "on", "board": 0}` - note the
+state comes back as the string `"on"` or `"off"`, not as the boolean you sent.
 
 ### All on / all off (per board)
 
