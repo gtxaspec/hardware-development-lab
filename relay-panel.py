@@ -189,11 +189,57 @@ def i2c_cmd(cmd, bus, addr, *args, timeout=BUS_TIMEOUT):
         return str(e), 1
 
 
+# XL9535 register map. The distinction between INPUT and OUTPUT matters more
+# than it looks: OUTPUT holds what was last written and echoes it back whatever
+# the pins are doing, so reading it back proves only that the chip accepted the
+# byte. INPUT reports the actual pin levels, and is the only one of the two
+# that can tell you a relay really moved.
+XL_INPUT_A = 0x00
+XL_OUTPUT_A = 0x02
+XL_CONFIG_A = 0x06      # 0 = output. Power-on default is 0xFF: all inputs.
+
+
+def i2c_read_pair(bus, addr, first, background=False):
+    """Read two consecutive registers in one transaction. Caller holds the lock.
+
+    The XL9535 auto-increments within a register pair, so a single i2ctransfer
+    replaces two i2cget subprocesses. On this bench the subprocess is nearly
+    all of the cost (5 ms the one way, 9 ms the other), which is what makes
+    reading the pins as well as the outputs cheaper than reading the outputs
+    alone used to be.
+    """
+    cmd = ["i2ctransfer", "-y", str(bus), f"w1@{addr}", hex(first), "r2"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=bus_timeout(background))
+    except Exception as e:
+        raise RuntimeError(f"read {first:#04x} at {addr} on bus {bus}: {e}")
+    parts = r.stdout.split()
+    if r.returncode != 0 or len(parts) != 2:
+        detail = r.stderr.strip() or r.stdout.strip() or "no data"
+        raise RuntimeError(f"read {first:#04x} at {addr} on bus {bus}: {detail}")
+    return int(parts[0], 16), int(parts[1], 16)
+
+
 def i2c_init_board(bus, addr):
-    """Set all pins as output."""
+    """Configure every pin as an output, and confirm it took.
+
+    Verified rather than assumed, for the same reason the PWM chip's
+    auto-increment bit is: if these two writes are lost the direction
+    registers stay at their 0xFF power-on default, every pin is an input, and
+    the board goes on accepting and echoing relay writes while switching
+    nothing at all. Nothing downstream can tell the difference, because the
+    output registers read back exactly as written either way.
+    """
     with i2c_lock:
-        i2c_cmd("i2cset", bus, addr, "0x06", "0x00")
-        i2c_cmd("i2cset", bus, addr, "0x07", "0x00")
+        out_a, rc_a = i2c_cmd("i2cset", bus, addr, hex(XL_CONFIG_A), "0x00")
+        out_b, rc_b = i2c_cmd("i2cset", bus, addr, hex(XL_CONFIG_A + 1), "0x00")
+        if rc_a != 0 or rc_b != 0:
+            raise RuntimeError(f"direction write failed: {out_a or out_b}")
+        cfg_a, cfg_b = i2c_read_pair(bus, addr, XL_CONFIG_A)
+    if cfg_a or cfg_b:
+        raise RuntimeError(f"pins did not take output mode "
+                           f"(config {cfg_a:#04x}/{cfg_b:#04x}, want 0x00/0x00)")
 
 
 def i2c_read_state(bus, addr, background=False):
@@ -204,21 +250,35 @@ def i2c_read_state(bus, addr, background=False):
     where relays feed camera power that is the last thing to report
     confidently. get_full_state turns the exception into the board's `error`.
     """
-    t = bus_timeout(background)
     with i2c_lock.hold(background):
-        out_a, rc_a = i2c_cmd("i2cget", bus, addr, "0x02", timeout=t)
-        out_b, rc_b = i2c_cmd("i2cget", bus, addr, "0x03", timeout=t)
-    ok_a = rc_a == 0 and out_a.startswith("0x")
-    ok_b = rc_b == 0 and out_b.startswith("0x")
-    if not (ok_a and ok_b):
-        raise RuntimeError(f"no response at {addr} on bus {bus}")
-    return int(out_a, 16), int(out_b, 16)
+        try:
+            return i2c_read_pair(bus, addr, XL_OUTPUT_A, background)
+        except RuntimeError:
+            raise RuntimeError(f"no response at {addr} on bus {bus}")
+
+
+def i2c_read_pins(bus, addr, background=False):
+    """Read what the pins are actually doing. Returns (port_a, port_b).
+
+    The cross-check against i2c_read_state: these agree on healthy hardware
+    and diverge when a write never reached the pins.
+    """
+    with i2c_lock.hold(background):
+        return i2c_read_pair(bus, addr, XL_INPUT_A, background)
 
 
 def i2c_write_reg(bus, addr, reg, value):
-    """Write a value to a register."""
+    """Write a value to a register, raising if the bus refuses it.
+
+    The return code was previously discarded, so a NAK on this one write left
+    the API answering with the state it had been asked for while the relay
+    stayed put - a click that silently did nothing, which is indistinguishable
+    from a click that was never registered.
+    """
     with i2c_lock:
-        i2c_cmd("i2cset", bus, addr, reg, hex(value))
+        out, rc = i2c_cmd("i2cset", bus, addr, reg, hex(value))
+    if rc != 0:
+        raise RuntimeError(f"write {reg} at {addr} on bus {bus} failed: {out}")
 
 
 def set_relay(bus, addr, relay_num, state):
@@ -803,19 +863,47 @@ def get_usb_devices(vid=USB_VID_FILTER):
     return devices
 
 
+def pin_mismatch(size, out_a, out_b, in_a, in_b):
+    """Describe any disagreement between commanded outputs and actual pins.
+
+    Only the bits this board actually has are compared; a 16-way board uses
+    both ports, an 8-way one leaves port B undefined and it must not be read
+    as sixteen relays worth of fault.
+    """
+    mask_a = (1 << min(size, 8)) - 1
+    mask_b = (1 << max(0, size - 8)) - 1
+    if not ((out_a ^ in_a) & mask_a or (out_b ^ in_b) & mask_b):
+        return None
+    return (f"pins disagree with commanded outputs "
+            f"(commanded {out_a:#04x}/{out_b:#04x}, pins {in_a:#04x}/{in_b:#04x})")
+
+
 def get_board_states(board, background=False):
-    """Get all relay states for a board."""
-    bus = board["bus"]
-    addr = board["address"]
-    size = board["size"]
-    port_a, port_b = i2c_read_state(bus, addr, background=background)
+    """Relay states for a board, plus any disagreement with the actual pins.
+
+    Returns (states, warning). `states` comes from the output registers, i.e.
+    what the board has been commanded to do, because that is what a
+    read-modify-write has to build on: deriving the other fifteen relays from
+    a measurement would let one misread pin move every relay on the board.
+
+    `warning` is the cross-check the output registers cannot give you, since
+    they echo whatever was written whether or not it reached a pin. The two
+    agree on healthy hardware, and diverge on exactly the failures that are
+    otherwise invisible - a board still in its power-on all-inputs state, or a
+    pin that is not following its register.
+    """
+    bus, addr, size = board["bus"], board["address"], board["size"]
+    out_a, out_b = i2c_read_state(bus, addr, background=background)
     states = {}
     for i in range(size):
-        if i < 8:
-            states[i] = bool(port_a & (1 << i))
-        else:
-            states[i] = bool(port_b & (1 << (i - 8)))
-    return states
+        states[i] = bool((out_a if i < 8 else out_b) & (1 << (i % 8)))
+    try:
+        in_a, in_b = i2c_read_pins(bus, addr, background=background)
+    except RuntimeError:
+        # The pin read is a cross-check, not the state itself. Losing it costs
+        # the warning, and must not cost the reading we already have.
+        return states, None
+    return states, pin_mismatch(size, out_a, out_b, in_a, in_b)
 
 
 def get_full_state(config, background=False):
@@ -823,8 +911,7 @@ def get_full_state(config, background=False):
     result = []
     for idx, board in enumerate(config["boards"]):
         try:
-            states = get_board_states(board, background=background)
-            error = None
+            states, error = get_board_states(board, background=background)
         except Exception as e:
             states = {i: False for i in range(board["size"])}
             error = str(e)

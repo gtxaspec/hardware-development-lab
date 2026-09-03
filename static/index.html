@@ -1039,6 +1039,9 @@ async function fetchState() {
 
 async function toggleRelay(boardIdx, relayNum) {
   const data = await api('POST', '/api/relay/toggle', { board: boardIdx, relay: relayNum });
+  // A refused write leaves the relay where it was, so re-read rather than
+  // painting the state we asked for. Without this the card took `undefined`.
+  if (data && data.error) { toast(data.error); fetchState(); return; }
   // Update local state immediately
   const board = state.boards[boardIdx];
   if (board) {
@@ -1049,7 +1052,8 @@ async function toggleRelay(boardIdx, relayNum) {
 }
 
 async function setAll(boardIdx, on) {
-  await api('POST', '/api/board/all', { board: boardIdx, state: on });
+  const data = await api('POST', '/api/board/all', { board: boardIdx, state: on });
+  if (data && data.error) toast(data.error);
   fetchState();
 }
 

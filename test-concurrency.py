@@ -137,5 +137,20 @@ ck("auto-increment clear needs init", rp.pca_needs_init(regs_with(0x01, 0x03), 3
 ck("still asleep needs init", rp.pca_needs_init(regs_with(0x30, 0x03), 3), True)
 ck("wrong prescale needs init", rp.pca_needs_init(regs_with(0x20, 0x1e), 3), True)
 
+print("\n--- pin_mismatch: commanded outputs vs actual pins ---")
+mm = rp.pin_mismatch
+ck("healthy 16-way board is quiet", mm(16, 0x80, 0x80, 0x80, 0x80, ), None)
+ck("all-off healthy board is quiet", mm(16, 0x00, 0x00, 0x00, 0x00), None)
+ck_true("port A disagreement is caught", mm(16, 0x01, 0x00, 0x00, 0x00) is not None)
+ck_true("port B disagreement is caught", mm(16, 0x00, 0x80, 0x00, 0x00) is not None)
+# The real failure: direction registers never configured, so every write is
+# accepted and echoed while the pins stay put. Measured on the bench.
+ck_true("an unconfigured board is caught",
+        mm(16, 0xff, 0xff, 0x00, 0x00) is not None)
+ck("an 8-way board ignores port B", mm(8, 0x0f, 0x00, 0x0f, 0xff), None)
+ck_true("the warning names both sides",
+        "0xff" in mm(16, 0xff, 0xff, 0x00, 0x00)
+        and "0x00" in mm(16, 0xff, 0xff, 0x00, 0x00))
+
 print(f"\n{'FAILED: ' + ', '.join(fails) if fails else 'all passed'}")
 sys.exit(1 if fails else 0)
