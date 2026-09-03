@@ -1044,10 +1044,28 @@ function clearToken() {
   if (msg) msg.textContent = 'Token cleared.';
 }
 
+// The one gate every path repaints through. There are twenty-odd calls to
+// fetchState(), most of them straight after a write, so leaving the check in
+// the poll alone would let a pre-click snapshot back in through any of them.
+// Returns whether the snapshot was accepted.
+function applySnapshot(newState) {
+  if (!newState || !newState.boards) return false;   // an error body, not a bench
+  if ((newState.covers_writes || 0) < needWriteSeq) {
+    // Not held off indefinitely: if the sampler cannot reach the bench the
+    // reading never catches up, and a reading flagged stale is better than
+    // our own guess shown forever as though it were confirmed.
+    if (!waitingSince) waitingSince = Date.now();
+    if (Date.now() - waitingSince <= WRITE_WAIT_MS) return false;
+  }
+  waitingSince = 0;
+  state = newState;
+  render();
+  return true;
+}
+
 async function fetchState() {
   try {
-    state = await api('GET', '/api/state');
-    render();
+    applySnapshot(await api('GET', '/api/state'));
   } catch (e) {
     boardsEl.innerHTML = '<div class="loading">Failed to connect to server</div>';
   }
@@ -2299,16 +2317,7 @@ function startPolling() {
       dot.classList.add('active');
       try {
         const newState = await api('GET', '/api/state');
-        // Applying this blindly is what made a button flash green and go
-        // grey again: the snapshot can predate the click that turned the
-        // relay on, and repainting from it says the click did nothing.
-        const behind = (newState.covers_writes || 0) < needWriteSeq;
-        if (behind && !waitingSince) waitingSince = Date.now();
-        if (!behind || Date.now() - waitingSince > WRITE_WAIT_MS) {
-          if (!behind) waitingSince = 0;
-          state = newState;
-          render();
-        }
+        applySnapshot(newState);
         dot.classList.toggle('stale', !!newState.stale);
         dot.title = newState.stale
           ? `Bench last read ${newState.sampled_age_s}s ago`
