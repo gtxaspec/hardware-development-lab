@@ -153,6 +153,29 @@ def load_tokens():
     return data.get("tokens", {}) if isinstance(data, dict) else {}
 
 
+def parse_state(value):
+    """Interpret a request's on/off value, refusing anything ambiguous.
+
+    A bare bool() reads the string "off" as true, so a hand-written request
+    asking to turn a relay off switched it on instead - the worst available
+    reading of the field, on a bench where relays feed camera power. The UI
+    and the MCP server both send real booleans; the strings are accepted
+    because they are what anyone reaching for curl writes, and everything
+    else is a 400 rather than a guess.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("on", "true", "1", "yes"):
+            return True
+        if v in ("off", "false", "0", "no"):
+            return False
+    raise ValueError(f"state must be a boolean or one of on/off, got {value!r}")
+
+
 def hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -1228,7 +1251,11 @@ class RelayHandler(BaseHTTPRequestHandler):
         elif path == "/api/relay/set":
             board_idx = body.get("board", 0)
             relay_num = body.get("relay", 0)
-            state = body.get("state", False)
+            try:
+                state = parse_state(body.get("state", False))
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return
             if not self.authorize_relay(board_idx, relay_num):
                 self.forbidden()
                 return
@@ -1252,7 +1279,11 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/board/all":
             board_idx = body.get("board", 0)
-            state = body.get("state", False)
+            try:
+                state = parse_state(body.get("state", False))
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return
             config = load_config()
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
@@ -1320,7 +1351,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self.send_json({"error": "pin must be an integer"}, 400)
                     return
-            initial = bool(body.get("state", False))
+            try:
+                initial = parse_state(body.get("state", False))
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return
             with config_lock:
                 config = load_config()
                 for g in config["gpios"]:
@@ -1380,7 +1415,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json({"error": "wpi is required"}, 400)
                 return
-            state = bool(body.get("state", False))
+            try:
+                state = parse_state(body.get("state", False))
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return
             if not self.authorize_gpio(wpi):
                 self.forbidden()
                 return

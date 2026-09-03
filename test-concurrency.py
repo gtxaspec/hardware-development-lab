@@ -152,5 +152,17 @@ ck_true("the warning names both sides",
         "0xff" in mm(16, 0xff, 0xff, 0x00, 0x00)
         and "0x00" in mm(16, 0xff, 0xff, 0x00, 0x00))
 
+print("\n--- parse_state: \"off\" must never mean on ---")
+for v in (True, "on", "ON", " true ", "1", 1, "yes"):
+    ck(f"{v!r} is on", rp.parse_state(v), True)
+for v in (False, "off", "OFF", " false ", "0", 0, "no"):
+    ck(f"{v!r} is off", rp.parse_state(v), False)
+for v in ("", "maybe", None, 2, [], {"a": 1}):
+    try:
+        rp.parse_state(v)
+        ck_true(f"{v!r} is rejected", False, "(was accepted)")
+    except ValueError:
+        ck_true(f"{v!r} is rejected", True)
+
 print(f"\n{'FAILED: ' + ', '.join(fails) if fails else 'all passed'}")
 sys.exit(1 if fails else 0)
