@@ -238,8 +238,21 @@ def i2c_cmd(cmd, bus, addr, *args, timeout=BUS_TIMEOUT):
 # byte. INPUT reports the actual pin levels, and is the only one of the two
 # that can tell you a relay really moved.
 XL_INPUT_A = 0x00
-XL_OUTPUT_A = 0x02
+XL_OUTPUT_A = 0x02      # power-on default 0xFF - see i2c_init_board
+XL_POLARITY_A = 0x04    # inverts the INPUT registers only. Default 0x00.
 XL_CONFIG_A = 0x06      # 0 = output. Power-on default is 0xFF: all inputs.
+
+
+def i2c_write_pair(bus, addr, first, val_a, val_b):
+    """Write both registers of a pair in one transaction. Caller holds the lock.
+
+    A second data byte after the command byte lands in the pair's other
+    register, so the two ports move together rather than through a state where
+    one has been updated and the other has not.
+    """
+    out, rc = i2c_cmd("i2cset", bus, addr, hex(first), hex(val_a), hex(val_b), "i")
+    if rc != 0:
+        raise RuntimeError(f"write {first:#04x} at {addr} on bus {bus} failed: {out}")
 
 
 def i2c_read_pair(bus, addr, first, background=False):
@@ -251,6 +264,9 @@ def i2c_read_pair(bus, addr, first, background=False):
     reading the pins as well as the outputs cheaper than reading the outputs
     alone used to be.
     """
+    # r2 and no more: the registers work as pairs and a read past the second
+    # byte wraps back to the first, so r4 from 0x02 gives 0x02,0x03,0x02,0x03
+    # rather than four consecutive registers.
     cmd = ["i2ctransfer", "-y", str(bus), f"w1@{addr}", hex(first), "r2"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
@@ -265,24 +281,36 @@ def i2c_read_pair(bus, addr, first, background=False):
 
 
 def i2c_init_board(bus, addr):
-    """Configure every pin as an output, and confirm it took.
+    """Bring a board to a known state: every relay off, every pin an output.
 
-    Verified rather than assumed, for the same reason the PWM chip's
-    auto-increment bit is: if these two writes are lost the direction
-    registers stay at their 0xFF power-on default, every pin is an input, and
-    the board goes on accepting and echoing relay writes while switching
-    nothing at all. Nothing downstream can tell the difference, because the
-    output registers read back exactly as written either way.
+    The order is the whole point. Output Port powers up as 0xFF (datasheet
+    tables 9 and 10) and a set bit energises a relay here, so configuring the
+    pins as outputs first drives all sixteen HIGH until the outputs are
+    cleared a transaction later. Measured on the bench: made outputs first,
+    the input registers read 0xff, every relay briefly pulled in. Writing the
+    outputs while the pins are still high-impedance takes them from undriven
+    straight to off, with no pulse at all.
+
+    Polarity inversion is asserted rather than assumed. It inverts the input
+    registers, which is exactly what get_board_states compares the outputs
+    against, so a stray bit there would make a healthy board report that its
+    pins disagree with what it has been told to do.
+
+    All of it is read back, because a write that is merely ACKed proves only
+    that the chip heard it.
     """
     with i2c_lock:
-        out_a, rc_a = i2c_cmd("i2cset", bus, addr, hex(XL_CONFIG_A), "0x00")
-        out_b, rc_b = i2c_cmd("i2cset", bus, addr, hex(XL_CONFIG_A + 1), "0x00")
-        if rc_a != 0 or rc_b != 0:
-            raise RuntimeError(f"direction write failed: {out_a or out_b}")
+        i2c_write_pair(bus, addr, XL_OUTPUT_A, 0x00, 0x00)    # off, still undriven
+        i2c_write_pair(bus, addr, XL_POLARITY_A, 0x00, 0x00)  # inputs read straight
+        i2c_write_pair(bus, addr, XL_CONFIG_A, 0x00, 0x00)    # only now, drive them
         cfg_a, cfg_b = i2c_read_pair(bus, addr, XL_CONFIG_A)
+        pol_a, pol_b = i2c_read_pair(bus, addr, XL_POLARITY_A)
     if cfg_a or cfg_b:
         raise RuntimeError(f"pins did not take output mode "
                            f"(config {cfg_a:#04x}/{cfg_b:#04x}, want 0x00/0x00)")
+    if pol_a or pol_b:
+        raise RuntimeError(f"polarity inversion did not clear "
+                           f"({pol_a:#04x}/{pol_b:#04x}, want 0x00/0x00)")
 
 
 def i2c_read_state(bus, addr, background=False):
@@ -357,15 +385,20 @@ def toggle_relay(bus, addr, relay_num):
 
 
 def set_all(bus, addr, size, state):
-    """Set all relays on a board on or off."""
+    """Set every relay on a board on or off.
+
+    A 16-way board moves both ports in one transaction, so there is no instant
+    where the first eight have switched and the second eight have not. An
+    8-way board's second port is left alone rather than zeroed, since nothing
+    here knows what else it might be wired to.
+    """
     if size <= 8:
-        mask_a = (1 << size) - 1 if state else 0
-        i2c_write_reg(bus, addr, "0x02", mask_a)
-    else:
-        mask_a = 0xFF if state else 0
-        mask_b = ((1 << (size - 8)) - 1) if state else 0
-        i2c_write_reg(bus, addr, "0x02", mask_a)
-        i2c_write_reg(bus, addr, "0x03", mask_b)
+        i2c_write_reg(bus, addr, hex(XL_OUTPUT_A), (1 << size) - 1 if state else 0)
+        return
+    mask_a = 0xFF if state else 0
+    mask_b = ((1 << (size - 8)) - 1) if state else 0
+    with i2c_lock:
+        i2c_write_pair(bus, addr, XL_OUTPUT_A, mask_a, mask_b)
 
 
 def gpio_cmd(*args, timeout=BUS_TIMEOUT):
@@ -2222,8 +2255,10 @@ def init_boards(config):
     """Initialize all configured boards and set all relays OFF."""
     for board in config["boards"]:
         try:
+            # i2c_init_board already leaves every relay off, as part of coming
+            # up in an order that never drives them. A set_all afterwards would
+            # be redundant, and before it would be the very pulse being avoided.
             i2c_init_board(board["bus"], board["address"])
-            set_all(board["bus"], board["address"], board["size"], False)
             print(f"  Initialized board at {board['address']} on bus {board['bus']} - all OFF")
         except Exception as e:
             print(f"  Failed to init board at {board['address']}: {e}")
