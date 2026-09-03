@@ -89,7 +89,7 @@ class FakeSampler(rp.BenchSampler):
                 "usb_vid": "a108", "n": self.reads}
 
 s = FakeSampler(interval=0.05)
-ck("no snapshot before the first read", s.latest(), (None, None))
+ck("no snapshot before the first read", s.latest(), (None, None, 0))
 p = s.payload()
 ck("payload falls back to a fresh read", p["n"], 1)
 ck("a fresh payload is not stale", p["stale"], False)
@@ -120,6 +120,31 @@ ck("writes stay patient", rp.bus_timeout(False), rp.BUS_TIMEOUT)
 ck_true("background timeout is well under the sample interval",
         rp.BUS_BACKGROUND_TIMEOUT < rp.SAMPLE_INTERVAL,
         f"({rp.BUS_BACKGROUND_TIMEOUT}s < {rp.SAMPLE_INTERVAL}s)")
+
+print("\n--- write barrier: a snapshot must say what it covers ---")
+start = rp.current_write_seq()
+ck("bump advances the sequence", rp.bump_write_seq(), start + 1)
+ck("and is readable", rp.current_write_seq(), start + 1)
+
+class SeqSampler(rp.BenchSampler):
+    def sample(self, background=True):
+        return {"boards": [], "gpios": [], "pwm": [], "usb": [], "usb_vid": "a108"}
+
+q = SeqSampler(interval=10.0)
+q.fresh()
+p0 = q.payload()
+ck("payload reports what it covers", p0["covers_writes"], rp.current_write_seq())
+
+# A write answered after the sweep must leave the snapshot visibly behind, or
+# the client repaints from a picture taken before its own click.
+seq_after = rp.bump_write_seq()
+ck_true("an older snapshot is behind the new write",
+        q.payload()["covers_writes"] < seq_after,
+        f"({q.payload()['covers_writes']} < {seq_after})")
+q.fresh()
+ck_true("a re-read catches up",
+        q.payload()["covers_writes"] >= seq_after,
+        f"({q.payload()['covers_writes']} >= {seq_after})")
 
 print("\n--- pca_needs_init: telling a fresh chip from a set-up one ---")
 M1, PS = rp.PCA_MODE1, rp.PCA_PRESCALE

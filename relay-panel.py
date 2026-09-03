@@ -119,6 +119,26 @@ i2c_lock = BusLock()
 gpio_lock = BusLock()
 config_lock = threading.Lock()
 
+# Counts writes that have been answered, so a reader can tell whether a
+# snapshot is old enough to predate its own click. Without it the panel shows
+# a button go green and then grey again, because the poll that lands next may
+# be carrying a picture of the bench taken before the relay moved.
+write_seq_lock = threading.Lock()
+write_seq = 0
+
+
+def bump_write_seq():
+    """Record that a write has been answered. Returns the new sequence."""
+    global write_seq
+    with write_seq_lock:
+        write_seq += 1
+        return write_seq
+
+
+def current_write_seq():
+    with write_seq_lock:
+        return write_seq
+
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -981,6 +1001,7 @@ class BenchSampler:
         self._wake = threading.Event()
         self._snapshot = None
         self._at = 0.0
+        self._covers = 0
 
     def sample(self, background=True):
         """One full read of the bench."""
@@ -996,32 +1017,41 @@ class BenchSampler:
             "usb_vid": USB_VID_FILTER,
         }
 
-    def _publish(self, snap):
+    def _publish(self, snap, covers):
         with self._lock:
             self._snapshot = snap
             self._at = time.monotonic()
+            self._covers = covers
 
     def latest(self):
-        """(snapshot, age in seconds), or (None, None) before the first read."""
+        """(snapshot, age, writes covered), or (None, None, 0) before the first read."""
         with self._lock:
             if self._snapshot is None:
-                return None, None
-            return self._snapshot, time.monotonic() - self._at
+                return None, None, 0
+            return self._snapshot, time.monotonic() - self._at, self._covers
 
     def fresh(self):
         """Read hardware now, at foreground priority, and publish it."""
+        # Captured before the read, not after: a write landing mid-sweep may
+        # have missed the board already visited, so only writes finished
+        # before the sweep began can be claimed.
+        covers = current_write_seq()
         snap = self.sample(background=False)
-        self._publish(snap)
+        self._publish(snap, covers)
         return snap
 
     def payload(self, fresh=False):
-        """The /api/state body, carrying how old the reading behind it is."""
-        snap, age = (None, None) if fresh else self.latest()
+        """The /api/state body, with the reading's age and what it covers."""
+        snap, age, covers = (None, None, 0) if fresh else self.latest()
         if snap is None:
-            snap, age = self.fresh(), 0.0
+            self.fresh()
+            snap, age, covers = self.latest()
         out = dict(snap)
         out["sampled_age_s"] = round(age, 2)
         out["stale"] = age > STALE_AFTER
+        # Lets a client tell whether this picture is old enough to predate a
+        # write it has already been told succeeded.
+        out["covers_writes"] = covers
         return out
 
     def nudge(self):
@@ -1035,7 +1065,8 @@ class BenchSampler:
     def run(self):
         while True:
             try:
-                self._publish(self.sample())
+                covers = current_write_seq()
+                self._publish(self.sample(), covers)
             except Exception as e:
                 # Keep serving the last good snapshot; its age is what tells
                 # the UI something is wrong. Inventing an all-off bench here
@@ -1070,7 +1101,18 @@ class RelayHandler(BaseHTTPRequestHandler):
         # remembering to do it in each of ~30 handlers, where a new endpoint
         # would silently forget and leave the snapshot a second behind.
         if self.command in ("POST", "PUT", "DELETE") and status < 400:
+            # Counted before the sampler is woken, so the sweep it triggers
+            # captures a sequence that already includes this write. Nudging
+            # first would have the resample claim to cover less than it does,
+            # and the client would sit on its optimistic state for an extra
+            # poll waiting for a number that had already gone by.
+            seq = bump_write_seq()
             sampler.nudge()
+            # Stamped here for the same reason the nudge is: every mutating
+            # endpoint answers through this one place, so none can forget to
+            # tell the caller which write its next poll has to catch up to.
+            if isinstance(data, dict):
+                data = dict(data, write_seq=seq)
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

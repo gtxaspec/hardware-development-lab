@@ -960,6 +960,7 @@ let focusedRelay = 0;
 let editing = false;
 let editMode = false;
 let pollTimer = null;
+let pollTick = null;
 let sliding = false;   // a PWM slider is being dragged; hold off the re-render
 
 function toggleEditMode() {
@@ -994,8 +995,23 @@ async function api(method, path, body) {
     showTokenPrompt(data && data.error === 'forbidden');
     return data;
   }
+  // Every accepted write comes back stamped. Remember the newest one so the
+  // poll can tell a picture of the bench taken before that write from one
+  // taken after it.
+  if (data && typeof data.write_seq === 'number') {
+    needWriteSeq = Math.max(needWriteSeq, data.write_seq);
+    pokePollSoon();
+  }
   return data;
 }
+
+// The state we have been told is true but have not yet seen confirmed.
+let needWriteSeq = 0;
+// A snapshot older than our own write is ignored, but not indefinitely: if the
+// sampler cannot reach the bench the reading will never catch up, and showing
+// a stale-flagged truth beats showing an optimistic guess forever.
+const WRITE_WAIT_MS = 4000;
+let waitingSince = 0;
 
 // Shown when the panel refuses an action: either no token from an untrusted
 // network, or a token that does not cover the thing being driven.
@@ -2283,8 +2299,16 @@ function startPolling() {
       dot.classList.add('active');
       try {
         const newState = await api('GET', '/api/state');
-        state = newState;
-        render();
+        // Applying this blindly is what made a button flash green and go
+        // grey again: the snapshot can predate the click that turned the
+        // relay on, and repainting from it says the click did nothing.
+        const behind = (newState.covers_writes || 0) < needWriteSeq;
+        if (behind && !waitingSince) waitingSince = Date.now();
+        if (!behind || Date.now() - waitingSince > WRITE_WAIT_MS) {
+          if (!behind) waitingSince = 0;
+          state = newState;
+          render();
+        }
         dot.classList.toggle('stale', !!newState.stale);
         dot.title = newState.stale
           ? `Bench last read ${newState.sampled_age_s}s ago`
@@ -2294,7 +2318,18 @@ function startPolling() {
     }
     pollTimer = setTimeout(tick, POLL_MS);
   };
+  pollTick = tick;
   pollTimer = setTimeout(tick, POLL_MS);
+}
+
+// After a write the sampler re-reads the bench straight away, so waiting a
+// full second to look again leaves the panel showing its own guess for longer
+// than the bench takes to actually agree. Reschedules rather than adding a
+// timer, so polls still cannot stack.
+function pokePollSoon() {
+  if (!pollTick) return;
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollTick, 250);
 }
 
 // --- Init ---
