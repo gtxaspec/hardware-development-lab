@@ -106,9 +106,18 @@ const fmt = (t) => t.map(s => `${s.on ? 'GREEN' : 'grey '}@${s.at}ms`).join('  -
         `(returned ${gotIn})`);
   check('and the button goes grey - the bug you reported', !(await isOn(page)));
 
-  await page.evaluate(() => { needWriteSeq = 0; });
-  if (await isOn(page)) { await page.click(SEL); await page.waitForTimeout(2000); }
-  check('left grey', !(await isOn(page)));
+  // Put the relay back through the API, not the page: the control just fed
+  // the page a snapshot claiming everything is off, so asking the button what
+  // state it is in would leave the relay switched on and the run looking clean.
+  await fetch(`${URL}/api/relay/set`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ board: Number(board), relay: Number(relay), state: false }),
+  });
+  const after = await (await fetch(`${URL}/api/state?fresh=1`)).json();
+  const left = after.boards[Number(board)].relays
+    .find(r => r.num === Number(relay)).state;
+  check('relay left off on the bench', left === 'off', `(reads ${left})`);
 
   await browser.close();
   console.log(fails ? `\nFAILED (${fails})` : '\nall passed');
