@@ -56,7 +56,7 @@ def list_relays() -> dict:
     Each GPIO has a wiringPi number, optional physical pin number, name, and state.
     State is always 'on' or 'off'.
     """
-    return api("GET", "/api/state")
+    return api("GET", "/api/state?fresh=1")
 
 
 @mcp.tool()

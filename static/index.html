@@ -69,6 +69,14 @@ body {
   background: var(--on);
 }
 
+/* The snapshot behind the panel is older than it should be, i.e. the sampler
+   is not getting answers from the bus. Shown rather than hidden: stale
+   readings on a bench that switches camera power are worth noticing. */
+.poll-dot.stale {
+  background: var(--warn, #e0a020);
+  box-shadow: 0 0 0 3px rgba(224, 160, 32, .25);
+}
+
 .header-actions {
   display: flex;
   gap: 0.5rem;
@@ -2258,19 +2266,31 @@ function uiHoldsFocus() {
   return a.tagName === 'SELECT' || a.classList.contains('pwm-slider');
 }
 
+const POLL_MS = 1000;
+
 function startPolling() {
-  // Poll every 3 seconds for state changes (e.g. from other clients)
+  // Self-scheduling rather than setInterval: a slow answer delays the next
+  // poll instead of stacking another one behind it. Overlapping polls are
+  // what turned a wedged i2c bus into a panel that took seconds to react,
+  // because every stacked poll was one more competitor for the bus lock.
   const dot = document.getElementById('pollDot');
-  pollTimer = setInterval(async () => {
-    if (editing || sliding || uiHoldsFocus()) return;
-    dot.classList.add('active');
-    try {
-      const newState = await api('GET', '/api/state');
-      state = newState;
-      render();
-    } catch (e) {}
-    setTimeout(() => dot.classList.remove('active'), 200);
-  }, 1000);
+  const tick = async () => {
+    if (!(editing || sliding || uiHoldsFocus())) {
+      dot.classList.add('active');
+      try {
+        const newState = await api('GET', '/api/state');
+        state = newState;
+        render();
+        dot.classList.toggle('stale', !!newState.stale);
+        dot.title = newState.stale
+          ? `Bench last read ${newState.sampled_age_s}s ago`
+          : 'Polling indicator';
+      } catch (e) {}
+      setTimeout(() => dot.classList.remove('active'), 200);
+    }
+    pollTimer = setTimeout(tick, POLL_MS);
+  };
+  pollTimer = setTimeout(tick, POLL_MS);
 }
 
 // --- Init ---

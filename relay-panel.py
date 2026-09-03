@@ -9,9 +9,10 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -40,8 +41,82 @@ USB_SYS_PATH = Path("/sys/bus/usb/devices")
 # RELAY_PANEL_USB_VID to follow a different vendor.
 USB_VID_FILTER = os.environ.get("RELAY_PANEL_USB_VID", "a108")
 
-i2c_lock = threading.Lock()
-gpio_lock = threading.Lock()
+# A write has to land, so it waits. A background read that is going to fail
+# should not own the bus while it does: a wedged i2c transfer used to hold the
+# lock for the full 5 s, which is what turned a bus glitch into a panel that
+# took seconds to answer a click.
+BUS_TIMEOUT = 5.0
+BUS_BACKGROUND_TIMEOUT = 0.4
+
+SAMPLE_INTERVAL = 1.0      # how often the sampler re-reads the bench
+STALE_AFTER = 3.0          # a snapshot older than this is flagged to the UI
+
+
+class BusLock:
+    """Serializes bus access, preferring clicks over background sampling.
+
+    `with bus:` is the foreground path and behaves exactly like the plain Lock
+    every caller had before. `with bus.background():` stands aside while any
+    foreground caller is waiting, so a poll can never be the reason a relay
+    takes a second to switch. Python's Lock is not FIFO-fair, so without this
+    a click competes with every in-flight sample and can lose repeatedly.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cv = threading.Condition()
+        self._waiting = 0
+        # Background readers queue among themselves before competing for the
+        # bus, so only ever one of them is holding or waiting on _lock. Without
+        # it they hand the lock straight to each other and a waiting click sits
+        # through all of them rather than just the one already in progress.
+        self._bg_turn = threading.Lock()
+
+    def __enter__(self):
+        with self._cv:
+            self._waiting += 1
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+        with self._cv:
+            self._waiting -= 1
+            if not self._waiting:
+                self._cv.notify_all()
+        return False
+
+    @contextmanager
+    def background(self, patience=2.0):
+        """Yield to foreground callers, but not forever.
+
+        The wait is bounded because the bench still has to report what it is
+        doing during a long slider drag; starving the sampler outright would
+        just trade a slow panel for a lying one.
+        """
+        deadline = time.monotonic() + patience
+        with self._bg_turn:
+            # Re-checked here rather than once on the way in: a click that
+            # arrives while an earlier sweep is still running must be let
+            # through before this one starts, not after it finishes.
+            with self._cv:
+                self._cv.wait_for(lambda: self._waiting == 0,
+                                  timeout=max(0.0, deadline - time.monotonic()))
+            with self._lock:
+                yield
+
+    def hold(self, background=False):
+        """The context manager matching this caller's priority."""
+        return self.background() if background else self
+
+
+def bus_timeout(background):
+    """Subprocess timeout matching this caller's priority."""
+    return BUS_BACKGROUND_TIMEOUT if background else BUS_TIMEOUT
+
+
+i2c_lock = BusLock()
+gpio_lock = BusLock()
 config_lock = threading.Lock()
 
 
@@ -99,11 +174,12 @@ def client_is_trusted(addr):
     return any(ip in net for net in TRUSTED_NETS)
 
 
-def i2c_cmd(cmd, bus, addr, *args):
+def i2c_cmd(cmd, bus, addr, *args, timeout=BUS_TIMEOUT):
     """Run an i2c command and return output."""
     full_cmd = [cmd, "-y", str(bus), str(addr)] + [str(a) for a in args]
     try:
-        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(full_cmd, capture_output=True, text=True,
+                                timeout=timeout)
         return result.stdout.strip(), result.returncode
     except Exception as e:
         return str(e), 1
@@ -116,7 +192,7 @@ def i2c_init_board(bus, addr):
         i2c_cmd("i2cset", bus, addr, "0x07", "0x00")
 
 
-def i2c_read_state(bus, addr):
+def i2c_read_state(bus, addr, background=False):
     """Read current output register states. Returns (port_a, port_b) as ints.
 
     Raises on a failed read rather than defaulting to zero. A wedged bus would
@@ -124,9 +200,10 @@ def i2c_read_state(bus, addr):
     where relays feed camera power that is the last thing to report
     confidently. get_full_state turns the exception into the board's `error`.
     """
-    with i2c_lock:
-        out_a, rc_a = i2c_cmd("i2cget", bus, addr, "0x02")
-        out_b, rc_b = i2c_cmd("i2cget", bus, addr, "0x03")
+    t = bus_timeout(background)
+    with i2c_lock.hold(background):
+        out_a, rc_a = i2c_cmd("i2cget", bus, addr, "0x02", timeout=t)
+        out_b, rc_b = i2c_cmd("i2cget", bus, addr, "0x03", timeout=t)
     ok_a = rc_a == 0 and out_a.startswith("0x")
     ok_b = rc_b == 0 and out_b.startswith("0x")
     if not (ok_a and ok_b):
@@ -184,11 +261,12 @@ def set_all(bus, addr, size, state):
         i2c_write_reg(bus, addr, "0x03", mask_b)
 
 
-def gpio_cmd(*args):
+def gpio_cmd(*args, timeout=BUS_TIMEOUT):
     """Run a `gpio` CLI command and return (stdout, returncode)."""
     full_cmd = ["gpio"] + [str(a) for a in args]
     try:
-        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(full_cmd, capture_output=True, text=True,
+                                timeout=timeout)
         return result.stdout.strip(), result.returncode
     except Exception as e:
         return str(e), 1
@@ -201,10 +279,10 @@ def gpio_init_pin(wpi, initial_state=False):
         gpio_cmd("write", wpi, 1 if initial_state else 0)
 
 
-def gpio_read(wpi):
+def gpio_read(wpi, background=False):
     """Read current state of a pin (True/False)."""
-    with gpio_lock:
-        out, rc = gpio_cmd("read", wpi)
+    with gpio_lock.hold(background):
+        out, rc = gpio_cmd("read", wpi, timeout=bus_timeout(background))
     if rc != 0:
         raise RuntimeError(f"gpio read {wpi} failed: {out}")
     return out.strip() == "1"
@@ -225,13 +303,13 @@ def gpio_toggle_pin(wpi):
     return not current
 
 
-def get_gpio_states(gpios):
+def get_gpio_states(gpios, background=False):
     """Return list of GPIO entries with live state read from hardware."""
     result = []
     for g in gpios:
         wpi = g["wpi"]
         try:
-            state = gpio_read(wpi)
+            state = gpio_read(wpi, background=background)
             error = None
         except Exception as e:
             state = False
@@ -315,13 +393,14 @@ def pca_level(words):
     return (off - on) & 0x0FFF
 
 
-def pca_dump(bus, addr):
+def pca_dump(bus, addr, background=False):
     """Read all 256 registers in a single i2cdump. Returns a list or None.
 
     One subprocess per poll instead of 64 i2cget calls for a 16-channel read.
     """
-    with i2c_lock:
-        out, rc = i2c_cmd("i2cdump", bus, addr, "b")
+    with i2c_lock.hold(background):
+        out, rc = i2c_cmd("i2cdump", bus, addr, "b",
+                          timeout=bus_timeout(background))
     if rc != 0:
         return None
     regs = [0] * 256
@@ -553,14 +632,14 @@ def get_pwm_groups(chip, levels):
     return groups
 
 
-def get_pwm_state(config):
+def get_pwm_state(config, background=False):
     """Live state of every configured PWM chip, read back from hardware."""
     result = []
     for idx, chip in enumerate(config.get("pwm", [])):
         bus = chip["bus"]
         addr = chip["address"]
         enabled = pca_enabled_channels(chip)
-        regs = pca_dump(bus, addr)
+        regs = pca_dump(bus, addr, background=background)
         # The poll already holds MODE1, so it is the cheapest place to notice
         # that a glitch reset the chip and put auto-increment back before the
         # next write silently no-ops. Repairing state during a read is worth
@@ -570,7 +649,7 @@ def get_pwm_state(config):
                 pca_set_mode1_ai(bus, addr, keep=regs[PCA_MODE1])
                 print(f"  PWM {addr} on bus {bus}: re-enabled auto-increment "
                       f"(MODE1 was {regs[PCA_MODE1]:#04x})")
-                regs = pca_dump(bus, addr) or regs
+                regs = pca_dump(bus, addr, background=background) or regs
             except Exception as e:
                 print(f"  PWM {addr} on bus {bus}: auto-increment repair failed: {e}")
         prescale = regs[PCA_PRESCALE] if regs else 0
@@ -679,12 +758,12 @@ def get_usb_devices(vid=USB_VID_FILTER):
     return devices
 
 
-def get_board_states(board):
+def get_board_states(board, background=False):
     """Get all relay states for a board."""
     bus = board["bus"]
     addr = board["address"]
     size = board["size"]
-    port_a, port_b = i2c_read_state(bus, addr)
+    port_a, port_b = i2c_read_state(bus, addr, background=background)
     states = {}
     for i in range(size):
         if i < 8:
@@ -694,12 +773,12 @@ def get_board_states(board):
     return states
 
 
-def get_full_state(config):
+def get_full_state(config, background=False):
     """Get the full state of all boards and relays."""
     result = []
     for idx, board in enumerate(config["boards"]):
         try:
-            states = get_board_states(board)
+            states = get_board_states(board, background=background)
             error = None
         except Exception as e:
             states = {i: False for i in range(board["size"])}
@@ -726,6 +805,98 @@ def get_full_state(config):
     return result
 
 
+class BenchSampler:
+    """One background thread reads the bench; every client serves its snapshot.
+
+    Reading hardware on the request path meant each open tab put a full sweep
+    of the bus (about ten subprocesses, ~150 ms of lock) between a click and
+    the relay it was meant to switch, and the cost scaled with the number of
+    tabs. One sampler decouples the two: readers cost no bus time at all, and
+    a click contends only with other clicks.
+
+    The snapshot is served with its age rather than as bare truth. A wedged
+    bus has to show up as stale data, not as a confident report of a bench
+    nobody has actually looked at - the same reason i2c_read_state raises
+    instead of reporting a failed read as "all off".
+    """
+
+    def __init__(self, interval=SAMPLE_INTERVAL):
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._snapshot = None
+        self._at = 0.0
+
+    def sample(self, background=True):
+        """One full read of the bench."""
+        config = load_config()
+        return {
+            "boards": get_full_state(config, background=background),
+            "gpios": get_gpio_states(config.get("gpios", []),
+                                     background=background),
+            "pwm": get_pwm_state(config, background=background),
+            "usb": get_usb_devices(),
+            # so the UI can label the section with the vendor actually
+            # being watched rather than assuming the default
+            "usb_vid": USB_VID_FILTER,
+        }
+
+    def _publish(self, snap):
+        with self._lock:
+            self._snapshot = snap
+            self._at = time.monotonic()
+
+    def latest(self):
+        """(snapshot, age in seconds), or (None, None) before the first read."""
+        with self._lock:
+            if self._snapshot is None:
+                return None, None
+            return self._snapshot, time.monotonic() - self._at
+
+    def fresh(self):
+        """Read hardware now, at foreground priority, and publish it."""
+        snap = self.sample(background=False)
+        self._publish(snap)
+        return snap
+
+    def payload(self, fresh=False):
+        """The /api/state body, carrying how old the reading behind it is."""
+        snap, age = (None, None) if fresh else self.latest()
+        if snap is None:
+            snap, age = self.fresh(), 0.0
+        out = dict(snap)
+        out["sampled_age_s"] = round(age, 2)
+        out["stale"] = age > STALE_AFTER
+        return out
+
+    def nudge(self):
+        """Resample as soon as possible, because something just changed.
+
+        Writes are human-paced and the Event coalesces, so a slider drag costs
+        one extra sweep rather than one per message.
+        """
+        self._wake.set()
+
+    def run(self):
+        while True:
+            try:
+                self._publish(self.sample())
+            except Exception as e:
+                # Keep serving the last good snapshot; its age is what tells
+                # the UI something is wrong. Inventing an all-off bench here
+                # would be worse than admitting the reading is old.
+                print(f"  sampler: {e}")
+            self._wake.wait(self.interval)
+            self._wake.clear()
+
+    def start(self):
+        threading.Thread(target=self.run, name="bench-sampler",
+                         daemon=True).start()
+
+
+sampler = BenchSampler()
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the relay control panel."""
 
@@ -739,6 +910,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         pass
 
     def send_json(self, data, status=200):
+        # Every mutating endpoint answers through here, so this is the one
+        # place that reliably knows the bench changed. Nudging centrally beats
+        # remembering to do it in each of ~30 handlers, where a new endpoint
+        # would silently forget and leave the snapshot a second behind.
+        if self.command in ("POST", "PUT", "DELETE") and status < 400:
+            sampler.nudge()
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -838,28 +1015,25 @@ class RelayHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path == "/api/state":
-            config = load_config()
-            state = get_full_state(config)
-            gpios = get_gpio_states(config.get("gpios", []))
-            self.send_json({
-                "boards": state,
-                "gpios": gpios,
-                "pwm": get_pwm_state(config),
-                "usb": get_usb_devices(),
-                # so the UI can label the section with the vendor actually
-                # being watched rather than assuming the default
-                "usb_vid": USB_VID_FILTER,
-            })
+            # `fresh=1` reads hardware instead of the snapshot, for callers
+            # that must see the bench rather than a recent picture of it -
+            # deploy.py verifying a restore actually landed, say.
+            want_fresh = parse_qs(parsed.query).get("fresh", ["0"])[0] not in ("0", "")
+            self.send_json(sampler.payload(fresh=want_fresh))
             return
 
         if path == "/api/pwm":
-            self.send_json({"pwm": get_pwm_state(load_config())})
+            snap = sampler.payload()
+            self.send_json({"pwm": snap["pwm"],
+                            "sampled_age_s": snap["sampled_age_s"],
+                            "stale": snap["stale"]})
             return
 
         if path == "/api/gpios":
-            config = load_config()
-            gpios = get_gpio_states(config.get("gpios", []))
-            self.send_json({"gpios": gpios})
+            snap = sampler.payload()
+            self.send_json({"gpios": snap["gpios"],
+                            "sampled_age_s": snap["sampled_age_s"],
+                            "stale": snap["stale"]})
             return
 
         if path == "/api/usb":
@@ -1909,6 +2083,10 @@ def main():
     init_gpios(config)
     print("Initializing PWM...")
     init_pwm(config)
+
+    print("Starting bench sampler...")
+    sampler.fresh()          # serve a real reading from the first request on
+    sampler.start()
 
     # An explicitly IPv4 RELAY_PANEL_HOST still gets a plain v4 socket.
     server_cls = DualStackHTTPServer if ":" in LISTEN_HOST else ThreadingHTTPServer

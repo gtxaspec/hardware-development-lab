@@ -327,7 +327,7 @@ def test_crud(snap):
 
 def test_address_guard(snap):
     print("\n--- address conflict guard ---")
-    _, st = api("GET", "/api/state")
+    _, st = api("GET", "/api/state?fresh=1")
     boards = st.get("boards", [])
     if not boards:
         skip("relay-board conflict guard", "no relay boards configured")

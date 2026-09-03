@@ -134,7 +134,7 @@ def preflight(pi, force):
 
 
 def snapshot(pi):
-    st = pi.api("GET", "/api/state")
+    st = pi.api("GET", "/api/state?fresh=1")
     snap = {
         "relays": [(b["index"], r["num"], r["name"])
                    for b in st.get("boards", []) for r in b["relays"] if r["state"] == "on"],
@@ -164,7 +164,7 @@ def restore(pi, snap):
 
 
 def verify(pi, snap):
-    st = pi.api("GET", "/api/state")
+    st = pi.api("GET", "/api/state?fresh=1")
     ok = True
 
     now = {(b["index"], r["num"]) for b in st.get("boards", []) for r in b["relays"] if r["state"] == "on"}
