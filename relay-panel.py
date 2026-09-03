@@ -480,8 +480,22 @@ PCA_ALL_LED_BASE = 0xFA   # ALL_LED_ON_L; writes land on all 16 channels
 PCA_PRESCALE = 0xFE
 
 PCA_M1_RESTART = 0x80
+PCA_M1_EXTCLK = 0x40      # sticky: only a power cycle or SWRST clears it
 PCA_M1_AI = 0x20          # auto-increment, required for the 4-byte block write
 PCA_M1_SLEEP = 0x10
+# SUB1/SUB2/SUB3 and ALLCALL, the addresses the chip answers to besides its
+# own. Cleared deliberately: this chip drives a bench's lights, and there is
+# nothing to gain from letting a broadcast meant for some other device reach
+# it. ALLCALL in particular is enabled at power-up, at 0xE0 (7-bit 0x70).
+PCA_M1_EXTRA_ADDRS = 0x0F
+
+# "It takes 500 us max. for the oscillator to be up and running once SLEEP bit
+# has been set to logic 0. Timings on LEDn outputs are not guaranteed if PWM
+# control registers are accessed within the 500 us window." Every i2c op here
+# spawns a subprocess and so already takes longer than that, but relying on
+# that is relying on an accident: a future switch to a persistent bus handle
+# would silently start writing inside the window.
+PCA_OSC_SETTLE = 0.001
 
 PCA_OSC_HZ = 25_000_000
 PCA_STEPS = 4096
@@ -607,7 +621,7 @@ def pca_set_freq(bus, addr, freq_hz):
         i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(base | PCA_M1_SLEEP))
         i2c_cmd("i2cset", bus, addr, hex(PCA_PRESCALE), hex(ps))
         i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(base & ~PCA_M1_SLEEP))
-        time.sleep(0.001)                        # datasheet wants 500 us
+        time.sleep(PCA_OSC_SETTLE)               # oscillator start-up
         i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1),
                 hex((base & ~PCA_M1_SLEEP) | PCA_M1_RESTART))
     return ps, pca_freq_for(ps)
@@ -623,13 +637,30 @@ def pca_set_mode1_ai(bus, addr, keep=0):
     nothing downstream can tell - which is why this reads MODE1 back rather
     than trusting the write.
     """
+    want = ((keep | PCA_M1_AI)
+            & ~PCA_M1_SLEEP & ~PCA_M1_RESTART & ~PCA_M1_EXTRA_ADDRS & 0xFF)
     with i2c_lock:
-        i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1),
-                hex((keep | PCA_M1_AI) & ~PCA_M1_SLEEP & ~PCA_M1_RESTART & 0xFF))
+        i2c_cmd("i2cset", bus, addr, hex(PCA_MODE1), hex(want))
+        # Clearing SLEEP starts the oscillator; hold off the callers that go
+        # straight on to write PWM registers until it is actually running.
+        time.sleep(PCA_OSC_SETTLE)
         cur, rc = i2c_cmd("i2cget", bus, addr, hex(PCA_MODE1))
     if rc != 0 or not cur.startswith("0x"):
         raise RuntimeError(f"MODE1 readback failed at {addr} on bus {bus}: {cur}")
     return int(cur, 16)
+
+
+def pca_extclk_stuck(regs):
+    """Whether the chip has been switched to an external clock it hasn't got.
+
+    EXTCLK is a sticky bit: writing 0 does not clear it, only a power cycle or
+    an I2C software reset does. So this is called out separately from
+    pca_needs_init - re-initializing cannot fix it, and a poll that kept
+    trying would just re-run init every second forever. While it is set the
+    frequency this panel reports is computed from an internal oscillator the
+    chip is no longer using.
+    """
+    return bool(regs and regs[PCA_MODE1] & PCA_M1_EXTCLK)
 
 
 def pca_needs_init(regs, want_prescale):
@@ -824,7 +855,13 @@ def get_pwm_state(config, background=False):
         # when someone switches the master back on. Setting it up therefore
         # belongs to whoever next finds it at power-on defaults, not to a
         # startup step that only ever gets one attempt at a dead chip.
-        if regs and pca_needs_init(regs, pca_prescale_for(want_hz)):
+        chip_error = None if regs else f"no response at {addr} on bus {bus}"
+        if pca_extclk_stuck(regs):
+            chip_error = (f"MODE1 EXTCLK is set ({regs[PCA_MODE1]:#04x}): the chip "
+                          "is waiting on an external clock, so PWM is stopped and "
+                          "the frequency shown is meaningless. Sticky bit - only a "
+                          "power cycle of the rail clears it.")
+        elif regs and pca_needs_init(regs, pca_prescale_for(want_hz)):
             try:
                 pca_init(bus, addr, want_hz)
                 print(f"  PWM {addr} on bus {bus}: initialized "
@@ -863,7 +900,7 @@ def get_pwm_state(config, background=False):
             "freq_hz": round(pca_freq_for(prescale), 1) if regs else 0,
             "channels": channels,
             "groups": get_pwm_groups(chip, levels),
-            "error": None if regs else f"no response at {addr} on bus {bus}",
+            "error": chip_error,
         })
     return result
 

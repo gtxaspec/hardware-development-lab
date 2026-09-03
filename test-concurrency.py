@@ -121,6 +121,24 @@ ck_true("background timeout is well under the sample interval",
         rp.BUS_BACKGROUND_TIMEOUT < rp.SAMPLE_INTERVAL,
         f"({rp.BUS_BACKGROUND_TIMEOUT}s < {rp.SAMPLE_INTERVAL}s)")
 
+print("\n--- pca_extclk_stuck: a re-init cannot fix a sticky bit ---")
+def m1(v):
+    r = [0] * 256
+    r[rp.PCA_MODE1] = v
+    return r
+ck("normal chip is not flagged", rp.pca_extclk_stuck(m1(0x20)), False)
+ck("EXTCLK set is flagged", rp.pca_extclk_stuck(m1(0x60)), True)
+ck("no readings, nothing to say", rp.pca_extclk_stuck(None), False)
+# It must not also come back as "needs init", or the poll would re-run init
+# every second against a bit that writing cannot clear.
+ck_true("EXTCLK is reported separately from needs_init",
+        rp.pca_extclk_stuck(m1(0x60)) and not rp.pca_needs_init(m1(0x60), 0))
+
+print("\n--- MODE1 written at init answers on its own address only ---")
+ck_true("oscillator settle is at least the datasheet's 500 us",
+        rp.PCA_OSC_SETTLE >= 0.0005, f"({rp.PCA_OSC_SETTLE * 1e6:.0f} us)")
+ck("SUB1/2/3 and ALLCALL are the extra addresses", rp.PCA_M1_EXTRA_ADDRS, 0x0F)
+
 print("\n--- write barrier: a snapshot must say what it covers ---")
 start = rp.current_write_seq()
 ck("bump advances the sequence", rp.bump_write_seq(), start + 1)
