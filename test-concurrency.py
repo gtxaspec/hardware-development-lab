@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bus priority and snapshot caching, without touching hardware.
+"""Bus priority, snapshot caching and init detection, without touching hardware.
 
 The rest of the suite needs a bench; this part is pure concurrency, so it runs
 anywhere and is the cheap place to catch a lock that lets a click starve.
@@ -120,6 +120,22 @@ ck("writes stay patient", rp.bus_timeout(False), rp.BUS_TIMEOUT)
 ck_true("background timeout is well under the sample interval",
         rp.BUS_BACKGROUND_TIMEOUT < rp.SAMPLE_INTERVAL,
         f"({rp.BUS_BACKGROUND_TIMEOUT}s < {rp.SAMPLE_INTERVAL}s)")
+
+print("\n--- pca_needs_init: telling a fresh chip from a set-up one ---")
+M1, PS = rp.PCA_MODE1, rp.PCA_PRESCALE
+def regs_with(mode1, prescale):
+    r = [0] * 256
+    r[M1], r[PS] = mode1, prescale
+    return r
+
+# 0x11 / 0x1e are the PCA9685's power-on defaults, i.e. what the panel sees
+# after its own init_boards has cut the rail the chip lives on.
+ck("a just-powered chip needs init", rp.pca_needs_init(regs_with(0x11, 0x1e), 3), True)
+ck("a set-up chip is left alone", rp.pca_needs_init(regs_with(0x20, 0x03), 3), False)
+ck("allcall set is still set up", rp.pca_needs_init(regs_with(0x21, 0x03), 3), False)
+ck("auto-increment clear needs init", rp.pca_needs_init(regs_with(0x01, 0x03), 3), True)
+ck("still asleep needs init", rp.pca_needs_init(regs_with(0x30, 0x03), 3), True)
+ck("wrong prescale needs init", rp.pca_needs_init(regs_with(0x20, 0x1e), 3), True)
 
 print(f"\n{'FAILED: ' + ', '.join(fails) if fails else 'all passed'}")
 sys.exit(1 if fails else 0)

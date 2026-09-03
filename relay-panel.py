@@ -496,6 +496,21 @@ def pca_set_mode1_ai(bus, addr, keep=0):
     return int(cur, 16)
 
 
+def pca_needs_init(regs, want_prescale):
+    """Whether the chip is at power-on defaults rather than at our setup.
+
+    SLEEP set is the giveaway that it has just been powered up, since the
+    panel never leaves it asleep. Auto-increment clear is the one that bites
+    hardest, because writes still ACK without it and the strips simply stay
+    dark. A stale PRE_SCALE catches a reset that somehow woke.
+    """
+    if regs[PCA_MODE1] & PCA_M1_SLEEP:
+        return True
+    if not regs[PCA_MODE1] & PCA_M1_AI:
+        return True
+    return regs[PCA_PRESCALE] != want_prescale
+
+
 def pca_init(bus, addr, freq_hz, attempts=3):
     """Wake the chip, enable auto-increment, set frequency, all channels off.
 
@@ -666,18 +681,22 @@ def get_pwm_state(config, background=False):
         addr = chip["address"]
         enabled = pca_enabled_channels(chip)
         regs = pca_dump(bus, addr, background=background)
-        # The poll already holds MODE1, so it is the cheapest place to notice
-        # that a glitch reset the chip and put auto-increment back before the
-        # next write silently no-ops. Repairing state during a read is worth
-        # it here: the alternative is a bench that lies about its lights.
-        if regs and not regs[PCA_MODE1] & PCA_M1_AI:
+        want_hz = chip.get("freq_hz", PWM_DEFAULT_FREQ)
+        # The chip is powered through the relay boards this panel drives, so
+        # it is absent at startup by construction (init_boards has just forced
+        # every relay off, master rails included) and reappears mid-session
+        # when someone switches the master back on. Setting it up therefore
+        # belongs to whoever next finds it at power-on defaults, not to a
+        # startup step that only ever gets one attempt at a dead chip.
+        if regs and pca_needs_init(regs, pca_prescale_for(want_hz)):
             try:
-                pca_set_mode1_ai(bus, addr, keep=regs[PCA_MODE1])
-                print(f"  PWM {addr} on bus {bus}: re-enabled auto-increment "
-                      f"(MODE1 was {regs[PCA_MODE1]:#04x})")
+                pca_init(bus, addr, want_hz)
+                print(f"  PWM {addr} on bus {bus}: initialized "
+                      f"(was MODE1 {regs[PCA_MODE1]:#04x}, "
+                      f"PRE_SCALE {regs[PCA_PRESCALE]})")
                 regs = pca_dump(bus, addr, background=background) or regs
             except Exception as e:
-                print(f"  PWM {addr} on bus {bus}: auto-increment repair failed: {e}")
+                print(f"  PWM {addr} on bus {bus}: init failed: {e}")
         prescale = regs[PCA_PRESCALE] if regs else 0
         channels = []
         for ch in enabled:
@@ -2063,6 +2082,12 @@ def init_pwm(config):
     """
     for chip in config.get("pwm", []):
         try:
+            if pca_dump(chip["bus"], chip["address"]) is None:
+                # Its power runs through a relay init_boards just turned off,
+                # so silence here is expected rather than a failure to report.
+                print(f"  PWM at {chip['address']} on bus {chip['bus']} is not "
+                      f"answering (unpowered?) - will be set up when it appears")
+                continue
             pca_init(chip["bus"], chip["address"],
                      chip.get("freq_hz", PWM_DEFAULT_FREQ))
             regs = pca_dump(chip["bus"], chip["address"])
