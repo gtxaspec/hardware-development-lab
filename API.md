@@ -6,7 +6,12 @@ The examples below use `$PANEL` for the panel's base URL. Set it once:
 export PANEL=http://your-pi:8080
 ```
 
-All requests use JSON. Set `Content-Type: application/json` on POST/PUT.
+Requests and responses use JSON, except for the UART event stream below.
+Set `Content-Type: application/json` on POST/PUT.
+
+JSON responses include `server_id`, an opaque identifier that changes when the
+server restarts. Successful writes also include `write_seq`. Compare counters
+only within the same `server_id`; discard late responses from an older process.
 
 Board addresses, bus numbers and channel assignments in the examples are
 illustrative — they describe whatever your bench is wired as, not a fixed
@@ -29,19 +34,127 @@ Response:
       "name": "Board 1",
       "address": "0x20",
       "bus": 2,
-      "size": 16,
+      "size": 2,
       "layout": "grid",
       "flipped": false,
       "relays": [
-        {"num": 0, "name": "Relay 0", "state": false},
-        {"num": 1, "name": "Relay 1", "state": true},
-        ...
+        {"num": 0, "name": "Relay 0", "state": "off"},
+        {"num": 1, "name": "Relay 1", "state": "on"}
       ],
       "error": null
     }
-  ]
+  ],
+  "gpios": [],
+  "pwm": [],
+  "usb": [],
+  "usb_vid": "a108",
+  "server_id": "opaque-process-id",
+  "sample_seq": 42,
+  "covers_writes": 7,
+  "sampled_age_s": 0.12,
+  "stale": false
 }
 ```
+
+State requests normally share a hardware snapshot. Use `/api/state?fresh=1` for
+an immediate read. `sample_seq` orders observations by when their sweeps began;
+an older sweep cannot replace a newer published observation. `covers_writes`
+identifies writes completed before that sweep began. A client confirming write
+7 should wait for `covers_writes >= 7` from the same server process, with a
+non-stale snapshot and no error on the affected device.
+
+Treat device states as unverified when the device has an `error`, or when the
+snapshot is `stale`. A failed read may contain placeholder OFF/zero values;
+these do not prove the hardware is off. Preserve a clearly marked last known
+reading or show an unknown state. A timed-out write may have reached the
+hardware: reconcile with a new reading instead of automatically retrying a
+toggle.
+
+## UART consoles
+
+### List available UARTs
+
+```bash
+curl -s "$PANEL/api/uarts"
+```
+
+Returns the UARTs the caller may view. Listing does not open any upstream
+connections. Example with two configured UARTs:
+
+```json
+{
+  "uarts": [
+    {"index": 0, "name": "ttyUSB0", "port": 3000},
+    {"index": 1, "name": "ttyUSB1", "port": 3001}
+  ],
+  "read_only": true,
+  "server_id": "opaque-process-id"
+}
+```
+
+Defaults are 24 UARTs at `127.0.0.1:3000` through `:3023`, matching
+`uart-monitor`. Operators can set `RELAY_PANEL_UART_HOST`,
+`RELAY_PANEL_UART_BASE_PORT`, and `RELAY_PANEL_UART_COUNT` (0–64) on the server.
+Callers cannot supply arbitrary hostnames or TCP ports.
+
+### Stream output
+
+```bash
+curl -N "$PANEL/api/uart/stream?uart=0"
+curl -N "$PANEL/api/uart/stream?uart=all"
+```
+
+This is a long-lived `text/event-stream` response. `uart=all` combines all
+UARTs the caller may view into one response. Example event frames:
+
+```text
+event: ready
+data: {"uarts": [0], "server_id": "opaque-process-id"}
+
+event: status
+data: {"uart": 0, "status": "connected"}
+
+event: output
+data: {"uart": 0, "text": "Booting...\r\n"}
+
+```
+
+| Event | Data and meaning |
+|---|---|
+| `ready` | Selected UART indices and server ID |
+| `status` | `uart`, `status`: `connecting`, `connected`, or `disconnected`; an optional `message` describes a connection failure |
+| `output` | `uart` and UTF-8 decoded `text`; chunks may contain partial or multiple lines and terminal escapes |
+| `gap` | `message`: a slow client exceeded its bounded queue; some output was dropped and the stream closes |
+| `denied` | `message`: access was revoked; the stream closes |
+
+Comment heartbeats arrive every five seconds, even when the serial device is
+quiet. Upstream TCP failures retry automatically; clients should reconnect if
+the HTTP stream closes, except after an access denial. There is no history
+replay or `Last-Event-ID` recovery. Invalid UTF-8 is replaced with `�`.
+
+The server never sends bytes to the UART. Browser subscribers share one raw
+TCP connection per selected UART, which closes when its last viewer leaves.
+Each HTTP viewer has a bounded queue, with a maximum of 32 concurrent viewers.
+Clients must parse JSON text and render it as text, not HTML.
+
+Invalid selections return 400, access failures 403, and a full viewer limit
+503 before starting the stream. Both UART endpoints require a trusted source
+or an authorized bearer token. Scoped tokens need `uarts` in their `allowed`
+map; `all` includes only those granted indices. For example, a console-only
+entry in the server's `tokens.json`:
+
+```json
+{"tokens": {"<sha256-of-token>": {"allowed": {"uarts": [0, 1]}}}}
+```
+
+Send the token in the header, including for the stream:
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" "$PANEL/api/uart/stream?uart=all"
+```
+
+Open streams recheck permission every five seconds. The UI uses streaming
+`fetch` so the bearer token stays in the header rather than the URL.
 
 ## Control Relays
 
@@ -53,7 +166,8 @@ curl -s -X POST -H 'Content-Type: application/json' \
   $PANEL/api/relay/toggle
 ```
 
-Response: `{"state": true}`
+Response includes `{"relay": 5, "state": "on", "board": 0}` plus `name`,
+`server_id`, and `write_seq`.
 
 ### Set a relay on or off
 

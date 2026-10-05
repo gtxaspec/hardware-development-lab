@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Relay Control Panel</title>
+<script>
+const uartWindowSelection = new URLSearchParams(location.search).get('console');
+const uartWindowMode = uartWindowSelection !== null;
+if (uartWindowMode) document.documentElement.classList.add('uart-window');
+</script>
 <style>
 :root {
   --bg: #0f0f13;
@@ -304,8 +309,25 @@ body.edit-mode .board-addr { cursor: pointer; }
   font-size: 0.75rem;
 }
 
+.relay-status-slot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  margin: 0 0.125rem;
+}
+
 .board-outline .relay-state {
-  display: none;
+  /* The top-row message never contributes to the button's width or height. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: auto;
+  font-size: 0.5625rem;
+  line-height: 1;
+  visibility: hidden;
 }
 
 .board-outline .relay-num {
@@ -335,6 +357,7 @@ body.edit-mode .board-addr { cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.875rem;
+  min-width: 0;
   min-height: 80px;
   cursor: pointer;
   transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
@@ -378,6 +401,7 @@ body.edit-mode .board-addr { cursor: pointer; }
 .relay-indicator {
   width: 10px;
   height: 10px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: var(--off);
   transition: background var(--transition), box-shadow var(--transition);
@@ -390,6 +414,7 @@ body.edit-mode .board-addr { cursor: pointer; }
 
 .relay-num {
   font-size: 0.6875rem;
+  flex-shrink: 0;
   color: var(--text-muted);
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
@@ -416,6 +441,12 @@ body.edit-mode .board-addr { cursor: pointer; }
 
 .relay-state {
   font-size: 0.6875rem;
+  height: 0.875rem;
+  line-height: 0.875rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
@@ -822,6 +853,89 @@ body.edit-mode .board-name { cursor: pointer; }
     background: var(--surface-active);
   }
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.relay-card.is-pending,
+.relay-card.is-unverified {
+  border-color: #d8aa50;
+  background: #252218;
+  box-shadow: none;
+}
+.relay-card.is-pending:focus-visible,
+.relay-card.is-unverified:focus-visible {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.relay-card.is-pending { cursor: progress; }
+.relay-card.is-unverified { cursor: help; }
+.relay-card.is-pending .relay-indicator,
+.relay-card.is-unverified .relay-indicator {
+  background: #d8aa50;
+  box-shadow: none;
+}
+.relay-card.is-pending .relay-state,
+.relay-card.is-unverified .relay-state,
+.relay-card.is-unverified .pwm-level {
+  color: #ebc577;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.board-outline .relay-card.is-pending .relay-state,
+.board-outline .relay-card.is-unverified .relay-state {
+  visibility: visible;
+}
+
+/* UART output lives outside the hardware renderer so polls preserve the console. */
+.uart-container { max-width: 1400px; margin: 0 auto; padding: 0 1.5rem 4rem; }
+.uart-section { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.uart-section > summary { cursor: pointer; padding: 1rem; font-size: 1.1rem; font-weight: 600; }
+.uart-section > summary::marker { color: var(--text-dim); }
+.uart-subtitle { color: var(--text-dim); font-size: 0.75rem; font-weight: 400; margin-left: 0.75rem; }
+.uart-body { padding: 0 1rem 1rem; }
+.uart-help, .uart-hint { color: var(--text-dim); font-size: 0.75rem; margin: 0.5rem 0; }
+.uart-ports { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 0.375rem; margin: 0.75rem 0 1rem; }
+.uart-port { display: flex; align-items: center; gap: 0.375rem; padding: 0.5rem; white-space: nowrap;
+  font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; text-align: left; }
+.uart-port::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--off); }
+.uart-port[data-status="connected"]::before { background: var(--on); }
+.uart-port[data-status="connecting"]::before, .uart-port[data-status="disconnected"]::before { background: #d8aa50; }
+.uart-port[aria-pressed="true"] { border-color: var(--focus); background: var(--surface-active); }
+.uart-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.uart-toolbar h3 { margin: 0; font-size: 0.9rem; }
+.uart-connection { color: var(--text-dim); font-size: 0.75rem; }
+.uart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-left: auto; }
+.uart-follow { display: flex; align-items: center; gap: 0.25rem; color: var(--text-dim); font-size: 0.75rem; }
+.uart-output { margin: 0; padding: 0.75rem; height: 24rem; max-height: 60vh; overflow: auto; white-space: pre;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+  font: 0.75rem/1.5 'SF Mono', 'Fira Code', monospace; tab-size: 8; }
+.uart-output:empty::before { content: 'Waiting for console output…'; color: var(--text-muted); }
+.uart-output:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .uart-container { padding: 0 0.75rem 3rem; }
+  .uart-section > summary { padding: 0.75rem; }
+  .uart-subtitle { display: block; margin: 0.25rem 0 0; }
+  .uart-body { padding: 0 0.75rem 0.75rem; }
+  .uart-controls { width: 100%; margin-left: 0; }
+}
+
+/* The separate window uses the same viewer, with the console filling its height. */
+.uart-window .header, .uart-window #boards, .uart-window .keyboard-hint,
+.uart-window #uartPorts, .uart-window #uartPopout { display: none; }
+.uart-window body { height: 100vh; height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.uart-window #tokenBar { flex: none; margin-top: 0.75rem !important; }
+.uart-window .uart-container { display: flex; flex: 1; min-height: 0; width: 100%; max-width: none; padding: 0.75rem; }
+.uart-window .uart-section { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.uart-window .uart-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; padding: 0.75rem; }
+.uart-window .uart-help:empty { display: none; }
+.uart-window #uartConsole:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.uart-window .uart-toolbar, .uart-window .uart-hint { flex: none; }
+.uart-window .uart-output { flex: 1; height: auto; min-height: 0; max-height: none; }
 </style>
 </head>
 <body>
@@ -848,6 +962,31 @@ body.edit-mode .board-name { cursor: pointer; }
 </div>
 
 <div class="boards-container" id="boards"></div>
+
+<div class="uart-container">
+  <details class="uart-section" id="uartSection">
+    <summary>UART consoles <span class="uart-subtitle">Live serial output · read only</span></summary>
+    <div class="uart-body">
+      <p id="uartHelp" class="uart-help" role="status">Select a UART to start streaming.</p>
+      <div id="uartPorts" class="uart-ports" aria-label="UART selection"></div>
+      <div id="uartConsole" hidden>
+        <div class="uart-toolbar">
+          <h3 id="uartName">Console</h3>
+          <span id="uartConnection" class="uart-connection" role="status">Disconnected</span>
+          <div class="uart-controls">
+            <label class="uart-follow"><input type="checkbox" id="uartFollow" checked>Follow output</label>
+            <button class="btn-surface btn-sm" id="uartClear" type="button">Clear</button>
+            <button class="btn-surface btn-sm" id="uartPopout" type="button"
+                    title="Open this console in a separate window" aria-label="Pop out console (opens a new window)">Pop out</button>
+            <button class="btn-surface btn-sm" id="uartConnect" type="button">Disconnect</button>
+          </div>
+        </div>
+        <pre id="uartOutput" class="uart-output" tabindex="0" role="region" aria-label="UART console output"></pre>
+        <div id="uartHint" class="uart-hint">Output starts when you connect. Closing this section disconnects the viewer.</div>
+      </div>
+    </div>
+  </details>
+</div>
 
 <div class="keyboard-hint">
   <span><kbd>Arrow</kbd> Navigate</span>
@@ -950,7 +1089,8 @@ body.edit-mode .board-name { cursor: pointer; }
   </div>
 </div>
 
-<div class="toast-container" id="toasts"></div>
+<div class="toast-container" id="toasts" role="status" aria-live="polite"></div>
+<div id="actionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 const boardsEl = document.getElementById('boards');
@@ -961,7 +1101,44 @@ let editing = false;
 let editMode = false;
 let pollTimer = null;
 let pollTick = null;
-let sliding = false;   // a PWM slider is being dragged; hold off the re-render
+let sliding = false;
+let serverId = null;
+const retiredServers = new Set();
+let lastSampleSeq = 0;
+let lastStateRequest = 0;
+let connectionProblem = '';
+const pendingSwitches = new Map();
+const uncertainControls = new Map();
+const CONFIRM_TIMEOUT_MS = 4000;
+
+function announce(message) {
+  document.getElementById('actionStatus').textContent = message;
+}
+
+const relayKey = (board, num) => `relay:${board.bus}:${board.address}:${num}`;
+const gpioKey = wpi => `gpio:${wpi}`;
+const pwmChipKey = chip => `pwm:${chip.bus}:${chip.address}`;
+
+function switchReadings(snapshot = state) {
+  const readings = new Map();
+  for (const board of snapshot.boards || []) {
+    for (const relay of board.relays) {
+      readings.set(relayKey(board, relay.num), {
+        item: relay, name: relay.name, value: relay.state,
+        valid: !snapshot.stale && !board.error && !relay.unverified &&
+          ['on', 'off'].includes(relay.state),
+      });
+    }
+  }
+  for (const gpio of snapshot.gpios || []) {
+    readings.set(gpioKey(gpio.wpi), {
+      item: gpio, name: gpio.name, value: gpio.state,
+      valid: !snapshot.stale && !gpio.error && !gpio.unverified &&
+        ['on', 'off'].includes(gpio.state),
+    });
+  }
+  return readings;
+}
 
 function toggleEditMode() {
   editMode = !editMode;
@@ -985,31 +1162,42 @@ function setApiToken(tok) {
   } catch (e) { /* private browsing - token lasts for this page only */ }
 }
 
-async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+async function api(method, path, body, { timeout = method === 'GET' ? 5000 : 12000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  const opts = { method, signal: controller.signal, headers: { 'Content-Type': 'application/json' } };
   if (apiToken) opts.headers['Authorization'] = 'Bearer ' + apiToken;
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 403) {
-    showTokenPrompt(data && data.error === 'forbidden');
+  try {
+    const res = await fetch(path, opts);
+    const data = await res.json();
+    if (!data || typeof data !== 'object') throw new Error('Invalid server response');
+    if (res.status === 403) showTokenPrompt(true);
+    if (!res.ok || data.error) {
+      return { ...data, error: data.error || `Request failed (${res.status})`,
+        uncertain: method !== 'GET' && res.status >= 500 };
+    }
+    if (method !== 'GET' && data.server_id && serverId && data.server_id !== serverId) {
+      pokePollSoon(true);
+      return { error: 'Panel restarted; checking the current state', uncertain: true };
+    }
+    if (typeof data.write_seq === 'number') {
+      needWriteSeq = Math.max(needWriteSeq, data.write_seq);
+      pokePollSoon();
+    }
     return data;
+  } catch (error) {
+    return { error: error.name === 'AbortError' ? 'Request timed out' : 'Connection lost',
+      uncertain: method !== 'GET' };
+  } finally {
+    clearTimeout(timer);
   }
-  // Every accepted write comes back stamped. Remember the newest one so the
-  // poll can tell a picture of the bench taken before that write from one
-  // taken after it.
-  if (data && typeof data.write_seq === 'number') {
-    needWriteSeq = Math.max(needWriteSeq, data.write_seq);
-    pokePollSoon();
-  }
-  return data;
 }
 
 // The state we have been told is true but have not yet seen confirmed.
 let needWriteSeq = 0;
-// A snapshot older than our own write is ignored, but not indefinitely: if the
-// sampler cannot reach the bench the reading will never catch up, and showing
-// a stale-flagged truth beats showing an optimistic guess forever.
+// Old observations never become authoritative merely because time passed.
+// A stalled sampler changes the UI to unverified while retaining its last read.
 const WRITE_WAIT_MS = 4000;
 let waitingSince = 0;
 
@@ -1022,8 +1210,8 @@ function showTokenPrompt(hasToken) {
   const msg = document.getElementById('tokenMsg');
   if (msg) {
     msg.textContent = apiToken
-      ? 'That control is outside your token’s scope.'
-      : 'This network needs an access token to make changes.';
+      ? (uartWindowMode ? 'This console is outside your token’s scope.' : 'That control is outside your token’s scope.')
+      : (uartWindowMode ? 'This network needs an access token to view consoles.' : 'This network needs an access token to make changes.');
   }
 }
 
@@ -1035,60 +1223,162 @@ function saveToken() {
     const bar = document.getElementById('tokenBar');
     if (bar) bar.style.display = 'none';
   }
-  fetchState();
+  if (uartWindowMode) initUartWindow();
+  else fetchState();
 }
 
 function clearToken() {
   setApiToken('');
   const msg = document.getElementById('tokenMsg');
   if (msg) msg.textContent = 'Token cleared.';
+  if (uartWindowMode) initUartWindow();
 }
 
 // The one gate every path repaints through. There are twenty-odd calls to
 // fetchState(), most of them straight after a write, so leaving the check in
 // the poll alone would let a pre-click snapshot back in through any of them.
 // Returns whether the snapshot was accepted.
-function applySnapshot(newState) {
-  if (!newState || !newState.boards) return false;   // an error body, not a bench
+function applySnapshot(newState, { requestId = 0, fresh = false } = {}) {
+  if (!newState || !Array.isArray(newState.boards)) return false;
+  if (newState.server_id && retiredServers.has(newState.server_id)) return false;
+  if (newState.server_id && newState.server_id !== serverId) {
+    if (serverId) retiredServers.add(serverId);
+    serverId = newState.server_id;
+    needWriteSeq = 0;
+    lastSampleSeq = 0;
+    for (const entry of pendingSwitches.values()) clearTimeout(entry.job.timer);
+    pendingSwitches.clear();
+    uncertainControls.clear();
+  }
+  if (requestId && requestId < lastStateRequest) return false;
+  if ((newState.sample_seq || 0) < lastSampleSeq) return false;
   if ((newState.covers_writes || 0) < needWriteSeq) {
-    // Not held off indefinitely: if the sampler cannot reach the bench the
-    // reading never catches up, and a reading flagged stale is better than
-    // our own guess shown forever as though it were confirmed.
     if (!waitingSince) waitingSince = Date.now();
-    if (Date.now() - waitingSince <= WRITE_WAIT_MS) return false;
+    if (Date.now() - waitingSince > WRITE_WAIT_MS) {
+      connectionProblem = 'State unverified: waiting for a current hardware reading';
+      render();
+    }
+    return false;
   }
   waitingSince = 0;
-  state = newState;
+  lastStateRequest = Math.max(lastStateRequest, requestId);
+  lastSampleSeq = Math.max(lastSampleSeq, newState.sample_seq || 0);
+  connectionProblem = '';
+  const previous = switchReadings();
+  const preserveReading = (item, key, invalid) => ({ ...item,
+    state: invalid ? previous.get(key)?.value ?? null : item.state,
+    unverified: invalid,
+  });
+  state = { ...newState,
+    boards: newState.boards.map(board => ({ ...board,
+      relays: board.relays.map(relay => preserveReading(relay, relayKey(board, relay.num),
+        !!(newState.stale || board.error) || !['on', 'off'].includes(relay.state))),
+    })),
+    gpios: (newState.gpios || []).map(gpio => preserveReading(gpio, gpioKey(gpio.wpi),
+      !!(newState.stale || gpio.error) || !['on', 'off'].includes(gpio.state))),
+    pwm: (newState.pwm || []).map(chip => {
+      const old = (state.pwm || []).find(c => pwmChipKey(c) === pwmChipKey(chip));
+      const invalid = !!(newState.stale || chip.error);
+      return { ...chip, unverified: invalid,
+        channels: chip.channels.map(channel => {
+          const before = old?.channels.find(c => c.ch === channel.ch);
+          return invalid && before ? { ...channel, level: before.level, percent: before.percent } : channel;
+        }),
+        groups: (chip.groups || []).map(group => {
+          const before = old?.groups?.find(g => g.index === group.index);
+          return invalid && before ? { ...group, level: before.level, percent: before.percent } : group;
+        }),
+      };
+    }),
+  };
+  reconcileCommands({ requestId, fresh });
   render();
   return true;
 }
 
-async function fetchState() {
-  try {
-    applySnapshot(await api('GET', '/api/state'));
-  } catch (e) {
-    boardsEl.innerHTML = '<div class="loading">Failed to connect to server</div>';
+function finishSwitchJob(job, message) {
+  clearTimeout(job.timer);
+  for (const [key, entry] of pendingSwitches) {
+    if (entry.job === job) pendingSwitches.delete(key);
   }
+  if (message) announce(message);
+}
+
+function markUncertain(key) {
+  uncertainControls.set(key, { sampleSeq: lastSampleSeq, requestId: stateRequestSerial + 1 });
+}
+
+function reconcileCommands({ requestId = 0, fresh = false } = {}) {
+  const readings = switchReadings();
+  for (const [key, marker] of uncertainControls) {
+    const chip = (state.pwm || []).find(c => pwmChipKey(c) === key);
+    const valid = chip ? !chip.unverified : readings.get(key)?.valid;
+    if (valid && !state.stale && ((state.sample_seq || 0) > marker.sampleSeq ||
+        (fresh && requestId >= marker.requestId))) uncertainControls.delete(key);
+  }
+  const jobs = new Set([...pendingSwitches.values()].map(entry => entry.job));
+  for (const job of jobs) {
+    if (job.phase !== 'confirming' || job.serverId !== serverId ||
+        (state.covers_writes || 0) < job.writeSeq) continue;
+    const entries = [...pendingSwitches].filter(([, entry]) => entry.job === job);
+    if (!entries.every(([key]) => readings.get(key)?.valid)) continue;
+    const matched = entries.every(([key, entry]) =>
+      readings.get(key).value === (entry.target ? 'on' : 'off'));
+    finishSwitchJob(job, matched ? `${job.label} confirmed` : `${job.label}: hardware reports a different state`);
+  }
+}
+
+async function sendSwitchCommand(actions, path, body, label) {
+  if (!actions.length || actions.some(action => pendingSwitches.has(action.key))) return;
+  const job = { phase: 'sending', serverId, label, timer: null };
+  for (const action of actions) pendingSwitches.set(action.key, { ...action, job });
+  announce(`${label}: sending`);
+  render();
+  const data = await api('POST', path, body);
+  if (!actions.some(action => pendingSwitches.get(action.key)?.job === job)) return;
+  if (data.error) {
+    if (data.uncertain) for (const action of actions) markUncertain(action.key);
+    finishSwitchJob(job);
+    toast(`${label}: ${data.error}${data.uncertain ? '; checking state' : ''}`);
+    render();
+    if (data.uncertain) fetchState(true);
+    return;
+  }
+  job.phase = 'confirming';
+  job.writeSeq = data.write_seq || 0;
+  job.serverId = data.server_id || serverId;
+  job.timer = setTimeout(() => {
+    for (const action of actions) markUncertain(action.key);
+    finishSwitchJob(job, `${label}: state unverified`);
+    render();
+    fetchState(true);
+  }, CONFIRM_TIMEOUT_MS);
+  reconcileCommands();
+  render();
+  pokePollSoon();
 }
 
 async function toggleRelay(boardIdx, relayNum) {
-  const data = await api('POST', '/api/relay/toggle', { board: boardIdx, relay: relayNum });
-  // A refused write leaves the relay where it was, so re-read rather than
-  // painting the state we asked for. Without this the card took `undefined`.
-  if (data && data.error) { toast(data.error); fetchState(); return; }
-  // Update local state immediately
   const board = state.boards[boardIdx];
-  if (board) {
-    const relay = board.relays.find(r => r.num === relayNum);
-    if (relay) relay.state = data.state;
-    render();
+  if (!board) return;
+  const key = relayKey(board, relayNum);
+  const reading = switchReadings().get(key);
+  if (pendingSwitches.has(key)) return;
+  if (!reading?.valid || connectionProblem || uncertainControls.has(key)) {
+    toast('State is unverified; checking the relay before changing it');
+    fetchState(true);
+    return;
   }
+  const target = reading.value !== 'on';
+  return sendSwitchCommand([{ key, target }], '/api/relay/set',
+    { board: boardIdx, relay: relayNum, state: target }, `${reading.name}: ${target ? 'ON' : 'OFF'}`);
 }
 
 async function setAll(boardIdx, on) {
-  const data = await api('POST', '/api/board/all', { board: boardIdx, state: on });
-  if (data && data.error) toast(data.error);
-  fetchState();
+  const board = state.boards[boardIdx];
+  if (!board) return;
+  return sendSwitchCommand(board.relays.map(relay => ({ key: relayKey(board, relay.num), target: on })),
+    '/api/board/all', { board: boardIdx, state: on }, `${board.name}: all ${on ? 'ON' : 'OFF'}`);
 }
 
 async function renameRelay(boardIdx, relayNum, name) {
@@ -1138,13 +1428,10 @@ function boardDisplayOrder(size) {
 }
 
 async function resetBoard(boardIdx) {
-  const result = await api('POST', '/api/board/reset', { board: boardIdx });
-  if (result.error) {
-    toast('Reset failed: ' + result.error);
-  } else {
-    toast('Board reset - all OFF');
-    fetchState();
-  }
+  const board = state.boards[boardIdx];
+  if (!board) return;
+  return sendSwitchCommand(board.relays.map(relay => ({ key: relayKey(board, relay.num), target: false })),
+    '/api/board/reset', { board: boardIdx }, `${board.name}: reset to OFF`);
 }
 
 async function deleteBoard(boardIdx) {
@@ -1154,19 +1441,22 @@ async function deleteBoard(boardIdx) {
 }
 
 async function toggleGpio(wpi) {
-  const data = await api('POST', '/api/gpio/toggle', { wpi });
-  if (data.error) { toast(data.error); return; }
-  const g = state.gpios.find(x => x.wpi === wpi);
-  if (g) g.state = data.state;
-  render();
+  const key = gpioKey(wpi);
+  if (pendingSwitches.has(key)) return;
+  const reading = switchReadings().get(key);
+  if (!reading?.valid || connectionProblem || uncertainControls.has(key)) {
+    toast('State is unverified; checking the GPIO before changing it');
+    fetchState(true);
+    return;
+  }
+  return setGpioState(wpi, reading.value !== 'on');
 }
 
 async function setGpioState(wpi, on) {
-  const data = await api('POST', '/api/gpio/set', { wpi, state: on });
-  if (data.error) { toast(data.error); return; }
   const g = state.gpios.find(x => x.wpi === wpi);
-  if (g) g.state = data.state;
-  render();
+  if (!g) return;
+  return sendSwitchCommand([{ key: gpioKey(wpi), target: on }], '/api/gpio/set',
+    { wpi, state: on }, `${g.name}: ${on ? 'ON' : 'OFF'}`);
 }
 
 async function renameGpio(wpi, name) {
@@ -1233,20 +1523,36 @@ function pwmPrescaleFor(hz) {
 // they arrive out of order and the strip settles on a stale level.
 const pwmInflight = new Map();
 
-async function pwmCoalesced(key, level, send) {
-  if (pwmInflight.has(key)) { pwmInflight.set(key, level); return; }
-  pwmInflight.set(key, level);
-  while (pwmInflight.has(key)) {
-    const v = pwmInflight.get(key);
-    const data = await send(v);
-    if (data && data.error) { toast(data.error); pwmInflight.delete(key); return; }
-    if (pwmInflight.get(key) === v) pwmInflight.delete(key);
-  }
+function pwmCoalesced(key, level, send, chipIdx) {
+  const existing = pwmInflight.get(key);
+  if (existing) { existing.level = level; return existing.promise; }
+  const job = { level, promise: null };
+  pwmInflight.set(key, job);
+  job.promise = (async () => {
+    try {
+      while (true) {
+        const value = job.level;
+        const data = await send(value);
+        if (data?.error) throw Object.assign(new Error(data.error), { uncertain: data.uncertain });
+        if (job.level === value) break;
+      }
+    } catch (error) {
+      toast(error.message || 'LED update failed');
+      if (error.uncertain !== false) {
+        const chip = state.pwm?.[chipIdx];
+        if (chip) markUncertain(pwmChipKey(chip));
+        fetchState(true);
+      }
+    } finally {
+      pwmInflight.delete(key);
+      render();
+      pokePollSoon();
+    }
+  })();
+  return job.promise;
 }
 
-// Repaint one channel card in place. The poll is held off during a drag, so a
-// group master has to push its members' cards itself or they sit stale until
-// the pointer comes up.
+// Repaint one channel card in place while a group master is changing.
 function paintPwmCard(chipIdx, ch, level) {
   const chip = (state.pwm || [])[chipIdx];
   const c = chip && chip.channels.find(x => x.ch === ch);
@@ -1254,7 +1560,7 @@ function paintPwmCard(chipIdx, ch, level) {
   const card = boardsEl.querySelector(`.pwm-card[data-pwm-chip="${chipIdx}"][data-pwm-ch="${ch}"]`);
   if (!card) return;
   const lv = card.querySelector('.pwm-level');
-  if (lv) lv.innerHTML = `<span>${(100 * level / PWM_MAX).toFixed(1)}%</span><span>${level}</span>`;
+  if (lv) setText(lv, `${(100 * level / PWM_MAX).toFixed(1)}% · ${level}`);
   card.classList.toggle('is-on', level > 0);
   const s = card.querySelector('.pwm-slider');
   if (s && document.activeElement !== s) s.value = level;
@@ -1263,19 +1569,21 @@ function paintPwmCard(chipIdx, ch, level) {
 async function pwmSend(chipIdx, ch, level) {
   return pwmCoalesced(`ch:${chipIdx}:${ch}`, level, async (v) => {
     const data = await api('POST', '/api/pwm/set', { chip: chipIdx, channel: ch, level: v });
-    if (data && !data.error) {
+    if (data && !data.error && pwmInflight.get(`ch:${chipIdx}:${ch}`)?.level === v &&
+        (data.write_seq || 0) >= (state.covers_writes || 0)) {
       const chip = (state.pwm || [])[chipIdx];
       const c = chip && chip.channels.find(x => x.ch === ch);
       if (c) { c.level = data.level; c.percent = data.percent; }
     }
     return data;
-  });
+  }, chipIdx);
 }
 
 async function pwmSendGroup(chipIdx, gi, level) {
   return pwmCoalesced(`g:${chipIdx}:${gi}`, level, async (v) => {
     const data = await api('POST', '/api/pwm/group', { chip: chipIdx, group: gi, level: v });
-    if (data && !data.error) {
+    if (data && !data.error && pwmInflight.get(`g:${chipIdx}:${gi}`)?.level === v &&
+        (data.write_seq || 0) >= (state.covers_writes || 0)) {
       const chip = (state.pwm || [])[chipIdx];
       const g = chip && (chip.groups || []).find(x => x.index === gi);
       if (g) { g.level = data.level; g.percent = data.percent; g.mixed = false; }
@@ -1284,7 +1592,7 @@ async function pwmSendGroup(chipIdx, gi, level) {
       }
     }
     return data;
-  });
+  }, chipIdx);
 }
 
 async function pwmSetAll(chipIdx, level) {
@@ -1319,7 +1627,10 @@ function startEditPwmName(chipIdx, ch) {
   input.focus();
   input.select();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save && input.value !== current) {
       await renamePwmChannel(chipIdx, ch, input.value);
@@ -1390,7 +1701,10 @@ function startEditPwmSettings(chipIdx) {
   const box = boardsEl.querySelector(`.board-settings-inline[data-pwm-idx="${chipIdx}"]`);
   box.querySelector(`#pwmSettAddr${chipIdx}`).focus();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save) {
       const addr = box.querySelector(`#pwmSettAddr${chipIdx}`).value || curAddr;
@@ -1433,7 +1747,10 @@ function startEditPwmChipName(chipIdx) {
   input.focus();
   input.select();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save && input.value !== current) {
       await api('PUT', '/api/pwm/name', { chip: chipIdx, name: input.value });
@@ -1605,7 +1922,7 @@ function renderPwmSection() {
       <div class="board-header">
         <span class="board-name" data-pwm-idx="${chip.index}" title="Click to rename in edit mode">${escHtml(chip.name)}</span>
         <span class="board-addr" data-pwm-idx="${chip.index}" title="Click to edit in edit mode">${chip.address} bus:${chip.bus} · ${chip.freq_hz} Hz (PRE_SCALE ${chip.prescale})</span>
-        ${chip.error ? `<span class="board-error">${escHtml(chip.error)}</span>` : ''}
+        <span class="board-error" data-pwm-error hidden></span>
         <div class="board-actions">
           <select class="pwm-freq" data-pwm-freq="${chip.index}" title="PWM frequency (applies to all 16 channels)">${opts}</select>
           <button class="btn-surface btn-sm edit-only" data-pwm-addch="${chip.index}" title="Add a channel"${(chip.available || []).length ? '' : ' disabled'}>+ Ch</button>
@@ -1628,7 +1945,7 @@ function renderGpiosSection() {
     const onClass = g.state === 'on' ? 'is-on' : '';
     const stateText = g.state === 'on' ? 'ON' : 'OFF';
     const numLabel = g.pin != null ? `wPi ${g.wpi} · p${g.pin}` : `wPi ${g.wpi}`;
-    const err = g.error ? `<div class="board-error">${escHtml(g.error)}</div>` : '';
+    const err = '<div class="board-error" data-gpio-error hidden></div>';
     return `<div class="relay-card gpio-card ${onClass}"
                  data-gpio-wpi="${g.wpi}"
                  role="button"
@@ -1692,7 +2009,7 @@ function renderUsbSection() {
   </div>`;
 }
 
-function render() {
+function renderStructure() {
   const noBoards = !state.boards || state.boards.length === 0;
   const noGpios = !state.gpios || state.gpios.length === 0;
   const noPwm = !state.pwm || state.pwm.length === 0;
@@ -1722,15 +2039,16 @@ function render() {
                    tabindex="${focused ? '0' : '-1'}"
                    data-board="${bi}" data-relay="${relay.num}" data-ri="${ri}"
                    role="button"
-                   aria-label="${relay.name} - ${stateText}"
+                   aria-label="${escAttr(relay.name)}"
                    aria-pressed="${relay.state === 'on'}">
         <div class="relay-top">
           <div class="relay-indicator"></div>
+          ${isBoardView ? `<span class="relay-status-slot"><span class="relay-state" aria-hidden="true"></span></span>` : ''}
           <button class="relay-edit-btn" data-edit-board="${bi}" data-edit-ri="${ri}" title="Edit name">edit</button>
           <span class="relay-num">#${relay.num}</span>
         </div>
         <div class="relay-name">${escHtml(relay.name)}</div>
-        <div class="relay-state">${stateText}</div>
+        ${isBoardView ? '<span class="relay-status-description sr-only"></span>' : `<div class="relay-state">${stateText}</div>`}
       </div>`;
     }).join('');
 
@@ -1749,13 +2067,13 @@ function render() {
       <div class="board-header">
         <span class="board-name" data-board-idx="${bi}" title="Click to rename">${escHtml(board.name)}</span>
         <span class="board-addr" data-board-idx="${bi}" title="Click to edit in edit mode">${board.address} bus:${board.bus} (${board.size}ch)</span>
-        ${board.error ? `<span class="board-error">${escHtml(board.error)}</span>` : ''}
+        <span class="board-error" data-board-error hidden></span>
         <div class="board-actions">
           <button class="${layoutBtnClass} btn-sm" onclick="toggleLayout(${bi})" title="Toggle layout">${layoutBtnText}</button>
           <button class="${flipBtnClass} btn-sm" onclick="toggleFlip(${bi})" title="Flip relay order">Flip</button>
-          <button class="btn-surface btn-sm" onclick="setAll(${bi}, true)">All On</button>
-          <button class="btn-surface btn-sm" onclick="setAll(${bi}, false)">All Off</button>
-          <button class="btn-surface btn-sm" onclick="resetBoard(${bi})" title="Re-init I2C and set all OFF">Reset</button>
+          <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="setAll(${bi}, true)">All On</button>
+          <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="setAll(${bi}, false)">All Off</button>
+          <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="resetBoard(${bi})" title="Re-init I2C and set all OFF">Reset</button>
           ${editMode && state.boards.length > 1 ? `<button class="btn-danger btn-sm" onclick="deleteBoard(${bi})">Remove</button>` : ''}
         </div>
       </div>
@@ -1765,11 +2083,143 @@ function render() {
 
   boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection() + renderUsbSection();
 
-  // Restore focus
-  const focusedCard = boardsEl.querySelector(`.relay-card[data-board="${focusedBoard}"][data-ri="${focusedRelay}"]`);
-  if (focusedCard && document.activeElement?.classList?.contains('relay-card')) {
-    focusedCard.focus();
+}
+
+let renderedStructure = null;
+let renderedUsb = null;
+
+function structureSignature() {
+  return JSON.stringify([editMode,
+    (state.boards || []).map(b => [b.bus, b.address, b.name, b.size, b.layout, b.flipped,
+      b.relays.map(r => [r.num, r.name])]),
+    (state.gpios || []).map(g => [g.wpi, g.pin, g.name]),
+    (state.pwm || []).map(c => [c.index, c.bus, c.address, c.name, c.available,
+      c.channels.map(ch => [ch.ch, ch.name, ch.phase]),
+      (c.groups || []).map(g => [g.index, g.name, g.channels, g.weights])]),
+  ]);
+}
+
+function setText(node, value) {
+  if (node && node.textContent !== String(value)) node.textContent = value;
+}
+
+function paintSwitch(card, key, reading, statusId) {
+  if (!card || !reading) return;
+  const pending = pendingSwitches.get(key);
+  const unverified = !reading.valid || !!connectionProblem || uncertainControls.has(key);
+  const last = ['on', 'off'].includes(reading.value) ? reading.value.toUpperCase() : null;
+  const text = pending ? `Turning ${pending.target ? 'on' : 'off'}…` :
+    unverified ? `Unverified${last ? ` · last ${last}` : ''}` : last;
+  card.classList.toggle('is-on', reading.value === 'on');
+  card.classList.toggle('is-pending', !!pending);
+  card.classList.toggle('is-unverified', unverified && !pending);
+  card.setAttribute('aria-label', reading.name);
+  card.setAttribute('aria-busy', String(!!pending));
+  card.setAttribute('aria-disabled', String(!editMode && (!!pending || unverified)));
+  if (unverified) card.removeAttribute('aria-pressed');
+  else card.setAttribute('aria-pressed', String(reading.value === 'on'));
+  const status = card.querySelector('.relay-state');
+  if (status) {
+    const description = card.querySelector('.relay-status-description');
+    const compactText = pending ? `${pending.target ? 'On' : 'Off'}…` : unverified ? 'Unverified' : last;
+    setText(status, description ? compactText : text);
+    status.title = text;
+    const accessibleStatus = description || status;
+    accessibleStatus.id = statusId;
+    if (description) setText(description, text);
+    card.setAttribute('aria-describedby', statusId);
   }
+}
+
+function paintPwmState(card, level, mixed, unverified) {
+  if (!card) return;
+  const slider = card.querySelector('.pwm-slider');
+  if (slider && !(sliding && document.activeElement === slider)) slider.value = level;
+  const text = `${(100 * level / PWM_MAX).toFixed(1)}% · ${level}${mixed ? ' · mixed' : ''}`;
+  setText(card.querySelector('.pwm-level'), unverified ? `Unverified · last ${text}` : text);
+  card.classList.toggle('is-on', level > 0);
+  card.classList.toggle('is-unverified', unverified);
+  slider?.setAttribute('aria-valuetext', unverified ? `Unverified, last ${text}` : text);
+}
+
+function paintLiveState() {
+  const readings = switchReadings();
+  for (const [bi, board] of (state.boards || []).entries()) {
+    const section = boardsEl.querySelector(`[data-board-idx="${bi}"].board-section`);
+    const error = section?.querySelector('[data-board-error]');
+    if (error) { setText(error, board.error || ''); error.hidden = !board.error; }
+    const busy = board.relays.some(r => pendingSwitches.has(relayKey(board, r.num)));
+    for (const button of section?.querySelectorAll('[data-board-command]') || []) button.disabled = busy;
+    for (const [ri, relay] of board.relays.entries()) {
+      const card = section?.querySelector(`[data-relay="${relay.num}"]`);
+      paintSwitch(card, relayKey(board, relay.num), readings.get(relayKey(board, relay.num)), `relay-state-${bi}-${relay.num}`);
+      if (card) card.tabIndex = bi === focusedBoard && ri === focusedRelay ? 0 : -1;
+    }
+  }
+  for (const gpio of state.gpios || []) {
+    const card = boardsEl.querySelector(`[data-gpio-wpi="${gpio.wpi}"]`);
+    paintSwitch(card, gpioKey(gpio.wpi), readings.get(gpioKey(gpio.wpi)), `gpio-state-${gpio.wpi}`);
+    if (card) card.tabIndex = 0;
+    const error = card?.querySelector('[data-gpio-error]');
+    if (error) { setText(error, gpio.error || ''); error.hidden = !gpio.error; }
+  }
+  for (const chip of state.pwm || []) {
+    const section = boardsEl.querySelector(`.pwm-section[data-pwm-idx="${chip.index}"]`);
+    if (!section) continue;
+    const invalid = chip.unverified || !!connectionProblem || uncertainControls.has(pwmChipKey(chip));
+    const error = section.querySelector('[data-pwm-error]');
+    if (error) { setText(error, chip.error || ''); error.hidden = !chip.error; }
+    if (!editing) setText(section.querySelector('.board-addr'),
+      `${chip.address} bus:${chip.bus} · ${chip.freq_hz} Hz (PRE_SCALE ${chip.prescale})`);
+    const freq = section.querySelector('[data-pwm-freq]');
+    if (freq && document.activeElement !== freq) {
+      const selected = PWM_FREQS.find(value => pwmPrescaleFor(value) === chip.prescale);
+      if (selected !== undefined) freq.value = selected;
+    }
+    const preview = new Map();
+    for (const group of chip.groups || []) {
+      const job = pwmInflight.get(`g:${chip.index}:${group.index}`);
+      const level = job ? job.level : group.level;
+      if (job) for (const channel of group.channels) {
+        preview.set(channel, Math.round(level * (group.weights?.[channel] ?? PWM_MAX) / PWM_MAX));
+      }
+      paintPwmState(section.querySelector(`[data-pwm-group="${group.index}"].pwm-card`),
+        level, !job && group.mixed, invalid);
+    }
+    for (const channel of chip.channels) {
+      const job = pwmInflight.get(`ch:${chip.index}:${channel.ch}`);
+      const level = job?.level ?? preview.get(channel.ch) ?? channel.level;
+      paintPwmState(section.querySelector(`[data-pwm-ch="${channel.ch}"].pwm-card`), level, false, invalid);
+    }
+  }
+}
+
+function render() {
+  const signature = structureSignature();
+  const active = document.activeElement;
+  const inlineDone = !editing && boardsEl.querySelector('.relay-name-input, .board-name-input, .board-settings-inline');
+  if (renderedStructure === null || ((signature !== renderedStructure || inlineDone) &&
+      !editing && !sliding && (!uiHoldsFocus() || inlineDone))) {
+    let focusSelector = null;
+    const focusedCard = active?.closest('.relay-card');
+    if (focusedCard?.matches('[data-board]')) {
+      focusSelector = `[data-board="${focusedCard.dataset.board}"][data-relay="${focusedCard.dataset.relay}"]`;
+    } else if (focusedCard?.matches('.gpio-card')) {
+      focusSelector = `[data-gpio-wpi="${focusedCard.dataset.gpioWpi}"]`;
+    }
+    renderStructure();
+    renderedStructure = signature;
+    renderedUsb = JSON.stringify([state.usb_vid, state.usb]);
+    if (focusSelector) boardsEl.querySelector(focusSelector)?.focus();
+  }
+  paintLiveState();
+  const usb = JSON.stringify([state.usb_vid, state.usb]);
+  if (usb !== renderedUsb) {
+    const section = boardsEl.querySelector('.usb-section');
+    if (section) section.outerHTML = renderUsbSection();
+    renderedUsb = usb;
+  }
+  updatePollStatus();
 }
 
 // --- Events ---
@@ -1892,10 +2342,8 @@ boardsEl.addEventListener('dblclick', (e) => {
   }
 });
 
-// PWM sliders: paint the readout locally on every input event and let pwmSend
-// coalesce the writes. The 1 Hz poll rewrites boardsEl wholesale, which would
-// tear the slider out from under the drag, so `sliding` holds it off until the
-// pointer is released.
+// Paint each input locally and coalesce writes. Polling continues during the
+// gesture; live rendering preserves the active slider and its requested value.
 boardsEl.addEventListener('input', (e) => {
   const s = e.target.closest('.pwm-slider');
   if (!s) return;
@@ -1905,10 +2353,11 @@ boardsEl.addEventListener('input', (e) => {
   if (card) {
     // dragging a master re-imposes the weighted ratio, so the mixed badge goes
     const lv = card.querySelector('.pwm-level');
-    if (lv) lv.innerHTML = `<span>${(100 * level / PWM_MAX).toFixed(1)}%</span><span>${level}</span>`;
+    if (lv) setText(lv, `${(100 * level / PWM_MAX).toFixed(1)}% · ${level}`);
     card.classList.toggle('is-on', level > 0);
   }
   pwmSliderSend(s, level);
+  if (s.dataset.pwmGroup != null) paintLiveState();
 });
 
 // A group slider carries data-pwm-group, a channel slider data-pwm-ch
@@ -1930,15 +2379,28 @@ boardsEl.addEventListener('change', (e) => {
 });
 
 // Belt and braces: a drag that ends outside the slider (or is cancelled) never
-// fires `change`, and a stuck `sliding` would freeze the whole panel's polling.
+// fires `change`, and a stuck `sliding` would defer structural updates forever.
 document.addEventListener('pointerup', () => { sliding = false; });
 document.addEventListener('pointercancel', () => { sliding = false; });
 
 document.addEventListener('keydown', (e) => {
+  if (uartWindowMode) return;
   if (editing) return;
+  if (e.target.closest('#uartSection')) return;
 
   // Don't capture if focus is in an input, modal, etc.
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.closest('button')) return;
+  if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return; }
+  const gpioCard = e.target.closest('.gpio-card');
+  if (gpioCard) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      const wpi = Number(gpioCard.dataset.gpioWpi);
+      if (editMode) startEditGpioName(wpi);
+      else toggleGpio(wpi);
+    }
+    return;
+  }
 
   const board = state.boards[focusedBoard];
   if (!board) return;
@@ -2025,12 +2487,10 @@ document.addEventListener('keydown', (e) => {
     case 'a':
       e.preventDefault();
       setAll(focusedBoard, true);
-      toast('All relays ON');
       break;
     case 'z':
       e.preventDefault();
       setAll(focusedBoard, false);
-      toast('All relays OFF');
       break;
   }
 });
@@ -2073,7 +2533,10 @@ function startEditRelayName(boardIdx, relayIdx) {
   input.focus();
   input.select();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save && input.value !== current) {
       await renameRelay(boardIdx, relay.num, input.value);
@@ -2104,7 +2567,10 @@ function startEditGpioName(wpi) {
   input.focus();
   input.select();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save && input.value !== current) {
       await renameGpio(wpi, input.value);
@@ -2132,7 +2598,10 @@ function startEditBoardName(boardIdx) {
   input.focus();
   input.select();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save && input.value !== current) {
       await renameBoard(boardIdx, input.value);
@@ -2188,7 +2657,10 @@ function startEditBoardSettings(boardIdx) {
   const container = boardsEl.querySelector(`.board-settings-inline[data-board-idx="${boardIdx}"]`);
   container.querySelector(`#settAddr${boardIdx}`).focus();
 
+  let finished = false;
   const finish = async (save) => {
+    if (finished) return;
+    finished = true;
     editing = false;
     if (save) {
       const newAddr = container.querySelector(`#settAddr${boardIdx}`).value || curAddr;
@@ -2289,15 +2761,323 @@ function escHtml(s) {
   return d.innerHTML;
 }
 function escAttr(s) {
-  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// --- Read-only UART consoles ---
+if (uartWindowMode) {
+  // A standalone section avoids a collapsible details wrapper around the flex layout.
+  const details = document.getElementById('uartSection');
+  const section = document.createElement('section');
+  section.id = details.id; section.className = details.className;
+  section.appendChild(details.querySelector('.uart-body'));
+  details.replaceWith(section);
+}
+const uartSection = document.getElementById('uartSection');
+const uartOutput = document.getElementById('uartOutput');
+let uartChoices = [];
+let uartSelected = null;
+let uartSession = null;
+let uartListRequest = 0;
+let uartPaintTimer = null;
+const uartStates = new Map();
+
+// A bounded log, not a terminal that can send input. Keep unfinished lines per
+// UART so prompts appear immediately and interleaved consoles keep their labels.
+class UartLog {
+  constructor() { this.lines = []; this.sources = new Map(); this.size = 0; this.trimmed = false; }
+  feed(index, text) {
+    let source = this.sources.get(index);
+    if (!source) { source = { escape: '', row: null, cursor: 0 }; this.sources.set(index, source); }
+    const row = () => {
+      if (!source.row) { source.row = { index, chars: [] }; this.lines.push(source.row); source.cursor = 0; }
+      return source.row;
+    };
+    const put = char => {
+      const line = row();
+      if (source.cursor === line.chars.length) { line.chars.push(char); this.size++; }
+      else line.chars[source.cursor] = char;
+      source.cursor++;
+      if (line.chars.length > 4096) {
+        line.chars.splice(0, 2048); source.cursor -= 2048; this.size -= 2048; this.trimmed = true;
+      }
+    };
+    for (const char of text) {
+      if (source.escape === 'esc') {
+        source.escape = char === '[' ? 'csi' : ']P_X^'.includes(char) ? 'string'
+          : char >= ' ' && char <= '/' ? 'esc-intermediate' : '';
+        continue;
+      }
+      if (source.escape === 'esc-intermediate') {
+        if (char >= '0' && char <= '~') source.escape = '';
+        continue;
+      }
+      if (source.escape === 'csi') {
+        if (char >= '@' && char <= '~') source.escape = '';
+        continue;
+      }
+      if (source.escape === 'string') {
+        if (char === '\x07') source.escape = '';
+        else if (char === '\x1b') source.escape = 'string-esc';
+        continue;
+      }
+      if (source.escape === 'string-esc') { source.escape = char === '\\' ? '' : 'string'; continue; }
+      if (char === '\x1b') { source.escape = 'esc'; continue; }
+      if (char === '\x9b') { source.escape = 'csi'; continue; }
+      if (char === '\n') { row(); source.row = null; source.cursor = 0; }
+      else if (char === '\r') source.cursor = 0;
+      else if (char === '\b') source.cursor = Math.max(0, source.cursor - 1);
+      else if (char === '\t') { const spaces = 8 - source.cursor % 8; for (let i = 0; i < spaces; i++) put(' '); }
+      else if (char >= ' ' && char !== '\x7f' && !(char >= '\x80' && char <= '\x9f')) put(char);
+    }
+    while (this.lines.length > 2000 || this.size > 200000) {
+      const removed = this.lines.shift();
+      this.size -= removed.chars.length;
+      const owner = this.sources.get(removed.index);
+      if (owner.row === removed) { owner.row = null; owner.cursor = 0; }
+      this.trimmed = true;
+    }
+  }
+  breakLine(index) {
+    const source = this.sources.get(index);
+    if (source) { source.row = null; source.cursor = 0; source.escape = ''; }
+  }
+  text(all) {
+    return this.lines.map(row => `${all ? `[ttyUSB${row.index}] ` : ''}${row.chars.join('')}`).join('\n');
+  }
+}
+let uartLog = new UartLog();
+const UART_WINDOW_HANDOFF = 'relay_panel_uart_window';
+
+function popOutUart() {
+  if (uartSelected === null) return;
+  // Open synchronously from the click so normal popup policies allow it.
+  const popup = window.open('', '_blank', 'popup,width=1000,height=650,resizable=yes,scrollbars=yes');
+  if (!popup) { toast('Allow pop-ups for this panel, then click Pop out again.'); return; }
+  const url = new URL(location.href);
+  url.search = ''; url.hash = '';
+  url.searchParams.set('console', uartSelected);
+  try {
+    // Only the new window receives this one-time snapshot. No console text or
+    // access token goes in the URL, and a blocked popup leaves this viewer intact.
+    popup.sessionStorage.setItem(UART_WINDOW_HANDOFF, JSON.stringify({
+      selection: uartSelected, created: Date.now(), trimmed: uartLog.trimmed,
+      follow: document.getElementById('uartFollow').checked,
+      lines: uartLog.lines.map(row => ({ index: row.index, text: row.chars.join('') })),
+    }));
+  } catch (_) { /* Storage unavailable: the new window starts with live output. */ }
+  popup.opener = null;
+  popup.location.replace(url.href);
+}
+
+async function initUartWindow() {
+  stopUart();
+  document.title = 'UART console';
+  const selection = uartWindowSelection === 'all' ? 'all'
+    : /^\d{1,2}$/.test(uartWindowSelection) ? Number(uartWindowSelection) : null;
+  if (selection === null) {
+    setText(document.getElementById('uartHelp'), 'Invalid UART selection. Open a console from the panel.');
+    return;
+  }
+  if (!await loadUarts()) return;
+  if (!uartChoices.length || (selection !== 'all' && !uartChoices.some(port => port.index === selection))) {
+    setText(document.getElementById('uartHelp'), 'This UART is not available with your current access.');
+    return;
+  }
+  uartLog = new UartLog();
+  try {
+    const snapshot = JSON.parse(sessionStorage.getItem(UART_WINDOW_HANDOFF));
+    sessionStorage.removeItem(UART_WINDOW_HANDOFF);
+    if (snapshot?.selection === selection && Date.now() - snapshot.created < 60000) {
+      const allowed = new Set(uartChoices.map(port => port.index));
+      for (const line of snapshot.lines) {
+        if (allowed.has(line.index) && (selection === 'all' || line.index === selection)) {
+          uartLog.feed(line.index, line.text + '\n');
+        }
+      }
+      uartLog.trimmed ||= snapshot.trimmed;
+      document.getElementById('uartFollow').checked = snapshot.follow;
+    }
+  } catch (_) { /* No saved scrollback, or storage is unavailable. */ }
+  setText(document.getElementById('uartHelp'), '');
+  startUart(selection, false);
+  paintUartOutput();
+  uartOutput.focus();
+}
+
+function paintUartOutput() {
+  clearTimeout(uartPaintTimer); uartPaintTimer = null;
+  uartOutput.textContent = uartLog.text(uartSelected === 'all');
+  if (document.getElementById('uartFollow').checked) uartOutput.scrollTop = uartOutput.scrollHeight;
+  setText(document.getElementById('uartHint'), uartLog.trimmed
+    ? 'Showing the most recent output; older text has been trimmed.'
+    : uartWindowMode ? 'Read only · closing this window disconnects the viewer.'
+    : 'Output starts when you connect. Closing this section disconnects the viewer.');
+}
+
+function paintUartConnection() {
+  const selected = uartSelected === 'all' ? uartChoices.map(port => port.index) : [uartSelected];
+  const connected = selected.filter(index => uartStates.get(index)?.status === 'connected').length;
+  const connecting = selected.some(index => uartStates.get(index)?.status === 'connecting');
+  const message = connected ? (selected.length === 1 ? 'Connected' : `${connected} / ${selected.length} connected`)
+    : connecting ? 'Connecting…' : 'Unavailable · retrying';
+  if (uartSession) setText(document.getElementById('uartConnection'), message);
+  for (const button of document.querySelectorAll('[data-uart]')) {
+    const index = button.dataset.uart === 'all' ? 'all' : Number(button.dataset.uart);
+    button.setAttribute('aria-pressed', String(index === uartSelected));
+    const status = index === 'all' ? (connected ? 'connected' : '') : uartStates.get(index)?.status || '';
+    button.dataset.status = status;
+    button.title = index === 'all' ? 'Monitor all available UARTs' : uartStates.get(index)?.message || `Monitor ttyUSB${index}`;
+  }
+}
+
+async function loadUarts() {
+  const request = ++uartListRequest;
+  setText(document.getElementById('uartHelp'), 'Loading UARTs…');
+  const data = await api('GET', '/api/uarts');
+  if (request !== uartListRequest || (!uartWindowMode && !uartSection.open)) return false;
+  if (data.error) {
+    const retry = uartWindowMode ? 'Reload this window to retry.' : 'Close and reopen this section to retry.';
+    setText(document.getElementById('uartHelp'), `Cannot load UARTs: ${data.error}. ${retry}`);
+    return false;
+  }
+  uartChoices = data.uarts || [];
+  const ports = document.getElementById('uartPorts');
+  ports.replaceChildren();
+  for (const port of [{ index: 'all', name: 'All UARTs' }, ...uartChoices]) {
+    if (!uartChoices.length) break;
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'btn-surface uart-port';
+    button.dataset.uart = port.index; button.textContent = port.name;
+    button.addEventListener('click', () => startUart(port.index));
+    ports.appendChild(button);
+  }
+  setText(document.getElementById('uartHelp'), uartChoices.length
+    ? `${uartChoices.length} UARTs · select one or monitor all with labeled output.` : 'No UARTs configured.');
+  paintUartConnection();
+  return true;
+}
+
+function stopUart(message = 'Disconnected') {
+  const session = uartSession;
+  uartSession = null;
+  if (session) {
+    session.controller?.abort();
+    clearTimeout(session.retryTimer);
+    session.retryResolve?.();
+  }
+  for (const index of uartStates.keys()) uartLog.breakLine(index);
+  uartStates.clear();
+  setText(document.getElementById('uartConnection'), message);
+  setText(document.getElementById('uartConnect'), 'Connect');
+  paintUartConnection();
+}
+
+function startUart(index, clear = true) {
+  stopUart(); uartSelected = index;
+  if (clear) { uartLog = new UartLog(); paintUartOutput(); }
+  document.getElementById('uartConsole').hidden = false;
+  const name = index === 'all' ? 'All UARTs' : `ttyUSB${index}`;
+  setText(document.getElementById('uartName'), name);
+  if (uartWindowMode) document.title = `${name} · UART console · ${location.hostname}`;
+  uartOutput.setAttribute('aria-label', `${name} console output`);
+  const session = { controller: null, retryTimer: null, retryResolve: null };
+  uartSession = session;
+  setText(document.getElementById('uartConnect'), 'Disconnect');
+  paintUartConnection();
+  readUart(session, index);
+}
+
+async function readUart(session, index) {
+  while (uartSession === session) {
+    session.controller = new AbortController();
+    let reader, watchdog;
+    const resetWatchdog = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => session.controller.abort(), 20000);
+    };
+    try {
+      setText(document.getElementById('uartConnection'), 'Connecting…');
+      resetWatchdog();
+      const headers = { Accept: 'text/event-stream' };
+      if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
+      const response = await fetch(`/api/uart/stream?uart=${encodeURIComponent(index)}`,
+        { headers, signal: session.controller.signal });
+      if (uartSession !== session) return;
+      if (!response.ok) {
+        if (response.status === 403) { showTokenPrompt(true); stopUart('UART access denied'); return; }
+        if (response.status === 400) { stopUart('UART is no longer available'); return; }
+        throw new Error(`Console unavailable (${response.status})`);
+      }
+      if (!response.headers.get('content-type')?.startsWith('text/event-stream')) throw new Error('Invalid console response');
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      while (uartSession === session) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('Console connection closed');
+        if (uartSession !== session) return;
+        resetWatchdog();
+        pending += decoder.decode(value, { stream: true });
+        let end;
+        while ((end = pending.indexOf('\n\n')) !== -1) {
+          const frame = pending.slice(0, end); pending = pending.slice(end + 2);
+          const lines = frame.split('\n');
+          const event = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+          const json = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (!json) continue; // Heartbeat.
+          const data = JSON.parse(json);
+          if (event === 'ready') {
+            uartStates.clear();
+            for (const uart of data.uarts) uartStates.set(uart, { status: 'connecting' });
+            paintUartConnection();
+          } else if (event === 'status') {
+            if (data.status !== 'connected') uartLog.breakLine(data.uart);
+            uartStates.set(data.uart, data); paintUartConnection();
+          } else if (event === 'output' && typeof data.text === 'string') {
+            uartLog.feed(data.uart, data.text);
+            if (uartPaintTimer === null) uartPaintTimer = setTimeout(paintUartOutput, 100);
+          } else if (event === 'gap') {
+            toast(data.message); throw new Error('Output gap; reconnecting');
+          } else if (event === 'denied') { stopUart(data.message); return; }
+        }
+        if (pending.length > 262144) throw new Error('Console response is too large');
+      }
+    } catch (error) {
+      if (uartSession !== session) return;
+      for (const uart of uartStates.keys()) uartLog.breakLine(uart);
+      uartStates.clear(); paintUartConnection();
+      setText(document.getElementById('uartConnection'), `${error.name === 'AbortError' ? 'Connection timed out' : error.message} · retrying`);
+    } finally {
+      clearTimeout(watchdog);
+      if (reader) await reader.cancel().catch(() => {});
+    }
+    if (uartSession !== session) return;
+    await new Promise(resolve => { session.retryResolve = resolve; session.retryTimer = setTimeout(resolve, 2000); });
+  }
+}
+
+uartSection.addEventListener('toggle', () => {
+  if (uartSection.open) loadUarts();
+  else { uartListRequest++; stopUart(); }
+});
+document.getElementById('uartClear').addEventListener('click', () => { uartLog = new UartLog(); paintUartOutput(); });
+document.getElementById('uartPopout').addEventListener('click', popOutUart);
+document.getElementById('uartConnect').addEventListener('click', () => {
+  if (uartSession) stopUart();
+  else if (uartSelected !== null) startUart(uartSelected, false);
+});
+document.getElementById('uartFollow').addEventListener('change', event => {
+  if (event.target.checked) uartOutput.scrollTop = uartOutput.scrollHeight;
+});
+uartOutput.addEventListener('scroll', () => {
+  if (uartOutput.scrollHeight - uartOutput.scrollTop - uartOutput.clientHeight > 16) document.getElementById('uartFollow').checked = false;
+});
+window.addEventListener('pagehide', () => stopUart());
+
 // --- Polling ---
-// render() replaces boardsEl wholesale, which destroys whatever node the user
-// is currently interacting with. An open <select> popup is anchored to its
-// element, so a poll landing mid-click closes the menu instantly. Holding off
-// while a control inside the panel has focus is self-correcting: clicking or
-// tabbing away blurs it and polling resumes on the next tick.
+// Only structural rebuilds wait for a focused slider or open select. Hardware
+// observations and updates to the existing controls continue normally.
 function uiHoldsFocus() {
   const a = document.activeElement;
   if (!a || !boardsEl.contains(a)) return false;
@@ -2305,44 +3085,86 @@ function uiHoldsFocus() {
 }
 
 const POLL_MS = 1000;
+let pollingStarted = false;
+let pollDue = Infinity;
+let stateRequest = null;
+let stateRequestSerial = 0;
+let queuedFresh = false;
+let queuedPoll = false;
 
-function startPolling() {
-  // Self-scheduling rather than setInterval: a slow answer delays the next
-  // poll instead of stacking another one behind it. Overlapping polls are
-  // what turned a wedged i2c bus into a panel that took seconds to react,
-  // because every stacked poll was one more competitor for the bus lock.
+function updatePollStatus() {
   const dot = document.getElementById('pollDot');
-  const tick = async () => {
-    if (!(editing || sliding || uiHoldsFocus())) {
-      dot.classList.add('active');
-      try {
-        const newState = await api('GET', '/api/state');
-        applySnapshot(newState);
-        dot.classList.toggle('stale', !!newState.stale);
-        dot.title = newState.stale
-          ? `Bench last read ${newState.sampled_age_s}s ago`
-          : 'Polling indicator';
-      } catch (e) {}
-      setTimeout(() => dot.classList.remove('active'), 200);
-    }
-    pollTimer = setTimeout(tick, POLL_MS);
-  };
-  pollTick = tick;
-  pollTimer = setTimeout(tick, POLL_MS);
+  const stale = !!(connectionProblem || state.stale);
+  dot.classList.toggle('active', !!stateRequest);
+  dot.classList.toggle('stale', stale);
+  dot.title = connectionProblem || (state.stale
+    ? `State unverified: bench last read ${state.sampled_age_s}s ago`
+    : 'Connected; reading hardware state');
 }
 
-// After a write the sampler re-reads the bench straight away, so waiting a
-// full second to look again leaves the panel showing its own guess for longer
-// than the bench takes to actually agree. Reschedules rather than adding a
-// timer, so polls still cannot stack.
-function pokePollSoon() {
-  if (!pollTick) return;
+function schedulePoll(delay = POLL_MS, fresh = false) {
+  queuedFresh ||= fresh;
+  if (stateRequest) { queuedPoll = true; return; }
+  if (!pollingStarted) return;
+  const due = Date.now() + delay;
+  if (pollTimer !== null && pollDue <= due) return;
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(pollTick, 250);
+  pollDue = due;
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    pollDue = Infinity;
+    fetchState();
+  }, delay);
+}
+
+function fetchState(fresh = false) {
+  if (stateRequest) {
+    if (fresh && !stateRequest.fresh) {
+      queuedFresh = true;
+      return stateRequest.promise.then(() => fetchState(true));
+    }
+    return stateRequest.promise;
+  }
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  pollDue = Infinity;
+  const read = { fresh: fresh || queuedFresh, requestId: ++stateRequestSerial, promise: null };
+  queuedFresh = false;
+  queuedPoll = false;
+  stateRequest = read;
+  updatePollStatus();
+  read.promise = (async () => {
+    try {
+      const data = await api('GET', read.fresh ? '/api/state?fresh=1' : '/api/state');
+      if (data.error || !Array.isArray(data.boards)) {
+        connectionProblem = `${data.error || 'Invalid state response'}; displayed state is unverified`;
+        render();
+        return false;
+      }
+      return applySnapshot(data, read);
+    } finally {
+      stateRequest = null;
+      updatePollStatus();
+      schedulePoll(queuedPoll ? 250 : POLL_MS);
+    }
+  })();
+  return read.promise;
+}
+
+function startPolling() {
+  pollingStarted = true;
+  pollTick = () => fetchState();
+  schedulePoll();
+}
+
+// Nudges share the same request and timer as manual refreshes and polling.
+function pokePollSoon(fresh = false) {
+  schedulePoll(250, fresh);
 }
 
 // --- Init ---
-fetchState().then(() => {
+if (uartWindowMode) initUartWindow();
+else fetchState().then(() => {
   startPolling();
   // Initial focus
   setTimeout(() => {

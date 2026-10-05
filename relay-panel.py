@@ -5,14 +5,18 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import socket
 import subprocess
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+from uart_stream import UartHub
 
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -20,6 +24,17 @@ TOKENS_FILE = BASE_DIR / "tokens.json"
 STATIC_DIR = BASE_DIR / "static"
 LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "::")
 LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
+# Write and sample counters belong to one process lifetime. Browsers use this
+# identifier to discard late replies and reset their counters after a restart.
+SERVER_ID = uuid.uuid4().hex
+
+# Same raw TCP consoles as uart-monitor: ttyUSB0..23 at ports 3000..3023.
+# These addresses are operator configuration, never supplied by an API caller.
+UART_HOST = os.environ.get("RELAY_PANEL_UART_HOST", "127.0.0.1")
+UART_BASE_PORT = int(os.environ.get("RELAY_PANEL_UART_BASE_PORT", "3000"))
+UART_COUNT = int(os.environ.get("RELAY_PANEL_UART_COUNT", "24"))
+uart_hub = UartHub(UART_HOST, UART_BASE_PORT, UART_COUNT)
+UART_HEARTBEAT = 5.0
 
 # Callers allowed to act without a token, i.e. with full control of the bench.
 # Defaults to loopback and private addressing, on the assumption that the panel
@@ -339,49 +354,52 @@ def i2c_read_pins(bus, addr, background=False):
 
 
 def i2c_write_reg(bus, addr, reg, value):
-    """Write a value to a register, raising if the bus refuses it.
+    """Write a register, raising on failure. Caller holds the bus lock.
 
     The return code was previously discarded, so a NAK on this one write left
     the API answering with the state it had been asked for while the relay
     stayed put - a click that silently did nothing, which is indistinguishable
     from a click that was never registered.
     """
-    with i2c_lock:
-        out, rc = i2c_cmd("i2cset", bus, addr, reg, hex(value))
+    out, rc = i2c_cmd("i2cset", bus, addr, reg, hex(value))
     if rc != 0:
         raise RuntimeError(f"write {reg} at {addr} on bus {bus} failed: {out}")
 
 
 def set_relay(bus, addr, relay_num, state):
     """Set a relay on or off."""
-    port_a, port_b = i2c_read_state(bus, addr)
-    if relay_num < 8:
-        if state:
-            port_a |= (1 << relay_num)
+    # Keep the read and write together: another request changing any relay
+    # on this port must not have its update overwritten by our old reading.
+    with i2c_lock:
+        port_a, port_b = i2c_read_pair(bus, addr, XL_OUTPUT_A)
+        if relay_num < 8:
+            if state:
+                port_a |= (1 << relay_num)
+            else:
+                port_a &= ~(1 << relay_num)
+            i2c_write_reg(bus, addr, "0x02", port_a)
         else:
-            port_a &= ~(1 << relay_num)
-        i2c_write_reg(bus, addr, "0x02", port_a)
-    else:
-        bit = relay_num - 8
-        if state:
-            port_b |= (1 << bit)
-        else:
-            port_b &= ~(1 << bit)
-        i2c_write_reg(bus, addr, "0x03", port_b)
+            bit = relay_num - 8
+            if state:
+                port_b |= (1 << bit)
+            else:
+                port_b &= ~(1 << bit)
+            i2c_write_reg(bus, addr, "0x03", port_b)
 
 
 def toggle_relay(bus, addr, relay_num):
     """Toggle a relay and return the new state."""
-    port_a, port_b = i2c_read_state(bus, addr)
-    if relay_num < 8:
-        port_a ^= (1 << relay_num)
-        i2c_write_reg(bus, addr, "0x02", port_a)
-        return bool(port_a & (1 << relay_num))
-    else:
-        bit = relay_num - 8
-        port_b ^= (1 << bit)
-        i2c_write_reg(bus, addr, "0x03", port_b)
-        return bool(port_b & (1 << bit))
+    with i2c_lock:
+        port_a, port_b = i2c_read_pair(bus, addr, XL_OUTPUT_A)
+        if relay_num < 8:
+            port_a ^= (1 << relay_num)
+            i2c_write_reg(bus, addr, "0x02", port_a)
+            return bool(port_a & (1 << relay_num))
+        else:
+            bit = relay_num - 8
+            port_b ^= (1 << bit)
+            i2c_write_reg(bus, addr, "0x03", port_b)
+            return bool(port_b & (1 << bit))
 
 
 def set_all(bus, addr, size, state):
@@ -392,12 +410,12 @@ def set_all(bus, addr, size, state):
     8-way board's second port is left alone rather than zeroed, since nothing
     here knows what else it might be wired to.
     """
-    if size <= 8:
-        i2c_write_reg(bus, addr, hex(XL_OUTPUT_A), (1 << size) - 1 if state else 0)
-        return
-    mask_a = 0xFF if state else 0
-    mask_b = ((1 << (size - 8)) - 1) if state else 0
     with i2c_lock:
+        if size <= 8:
+            i2c_write_reg(bus, addr, hex(XL_OUTPUT_A), (1 << size) - 1 if state else 0)
+            return
+        mask_a = 0xFF if state else 0
+        mask_b = ((1 << (size - 8)) - 1) if state else 0
         i2c_write_pair(bus, addr, XL_OUTPUT_A, mask_a, mask_b)
 
 
@@ -1072,6 +1090,8 @@ class BenchSampler:
         self._snapshot = None
         self._at = 0.0
         self._covers = 0
+        self._sample_seq = 0
+        self._published_seq = 0
 
     def sample(self, background=True):
         """One full read of the bench."""
@@ -1087,11 +1107,21 @@ class BenchSampler:
             "usb_vid": USB_VID_FILTER,
         }
 
-    def _publish(self, snap, covers):
+    def _begin_sample(self):
         with self._lock:
-            self._snapshot = snap
+            self._sample_seq += 1
+            return self._sample_seq
+
+    def _publish(self, snap, covers, sample_seq):
+        with self._lock:
+            # A slow background sweep may finish after a newer foreground
+            # read. It must not replace that newer observation.
+            if sample_seq < self._published_seq:
+                return
+            self._snapshot = dict(snap, sample_seq=sample_seq)
             self._at = time.monotonic()
             self._covers = covers
+            self._published_seq = sample_seq
 
     def latest(self):
         """(snapshot, age, writes covered), or (None, None, 0) before the first read."""
@@ -1105,9 +1135,10 @@ class BenchSampler:
         # Captured before the read, not after: a write landing mid-sweep may
         # have missed the board already visited, so only writes finished
         # before the sweep began can be claimed.
+        sample_seq = self._begin_sample()
         covers = current_write_seq()
         snap = self.sample(background=False)
-        self._publish(snap, covers)
+        self._publish(snap, covers, sample_seq)
         return snap
 
     def payload(self, fresh=False):
@@ -1135,8 +1166,9 @@ class BenchSampler:
     def run(self):
         while True:
             try:
+                sample_seq = self._begin_sample()
                 covers = current_write_seq()
-                self._publish(self.sample(), covers)
+                self._publish(self.sample(), covers, sample_seq)
             except Exception as e:
                 # Keep serving the last good snapshot; its age is what tells
                 # the UI something is wrong. Inventing an all-off bench here
@@ -1166,6 +1198,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         pass
 
     def send_json(self, data, status=200):
+        if isinstance(data, dict):
+            data = dict(data, server_id=SERVER_ID)
         # Every mutating endpoint answers through here, so this is the one
         # place that reliably knows the bench changed. Nudging centrally beats
         # remembering to do it in each of ~30 handlers, where a new endpoint
@@ -1174,7 +1208,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             # Counted before the sampler is woken, so the sweep it triggers
             # captures a sequence that already includes this write. Nudging
             # first would have the resample claim to cover less than it does,
-            # and the client would sit on its optimistic state for an extra
+            # and the client would sit on its pending state for an extra
             # poll waiting for a number that had already gone by.
             seq = bump_write_seq()
             sampler.nudge()
@@ -1277,9 +1311,96 @@ class RelayHandler(BaseHTTPRequestHandler):
             return False
         return allowed is None
 
+    def allowed_uarts(self):
+        ok, allowed = self._token_scope()
+        if not ok:
+            return set()
+        if allowed is None:
+            return set(range(UART_COUNT))
+        return {index for index in allowed.get("uarts", [])
+                if type(index) is int and 0 <= index < UART_COUNT}
+
+    def stream_uart(self, selection):
+        allowed = self.allowed_uarts()
+        if not allowed:
+            self.forbidden()
+            return
+        if selection == "all":
+            indices = allowed
+        else:
+            try:
+                index = int(selection)
+            except (TypeError, ValueError):
+                self.send_json({"error": "Invalid UART"}, 400)
+                return
+            if not 0 <= index < UART_COUNT:
+                self.send_json({"error": "Invalid UART"}, 400)
+                return
+            if index not in allowed:
+                self.forbidden()
+                return
+            indices = {index}
+        try:
+            subscription = uart_hub.subscribe(indices)
+        except RuntimeError as error:
+            self.send_json({"error": str(error)}, 503)
+            return
+
+        def send_event(event, data):
+            body = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+            self.wfile.write(body)
+            self.wfile.flush()
+
+        try:
+            self.connection.settimeout(10)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            send_event("ready", {"uarts": sorted(indices), "server_id": SERVER_ID})
+            check_at = time.monotonic() + UART_HEARTBEAT
+            while True:
+                now = time.monotonic()
+                if now >= check_at:
+                    if not indices.issubset(self.allowed_uarts()):
+                        send_event("denied", {"message": "UART access changed; reconnect with an authorized token"})
+                        return
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    check_at = now + UART_HEARTBEAT
+                if subscription.overflow.is_set():
+                    send_event("gap", {"message": "Viewer fell behind; some output was dropped. Reconnecting."})
+                    return
+                try:
+                    event, data = subscription.events.get(timeout=max(0.01, check_at - time.monotonic()))
+                except queue.Empty:
+                    continue
+                send_event(event, data)
+        except (OSError, ConnectionError):
+            pass  # Browser closed/switched consoles, or stopped reading.
+        finally:
+            uart_hub.unsubscribe(subscription)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        if path == "/api/uarts":
+            allowed = self.allowed_uarts()
+            if not allowed and UART_COUNT:
+                self.forbidden()
+                return
+            self.send_json({"uarts": [{"index": index, "name": f"ttyUSB{index}",
+                                      "port": UART_BASE_PORT + index}
+                                     for index in sorted(allowed)], "read_only": True})
+            return
+
+        if path == "/api/uart/stream":
+            self.stream_uart(parse_qs(parsed.query).get("uart", [""])[0])
+            return
 
         if path == "/api/state":
             # `fresh=1` reads hardware instead of the snapshot, for callers
@@ -1310,7 +1431,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         # Serve static files
         if path == "" or path == "/":
             path = "/index.html"
-        file_path = STATIC_DIR / path.lstrip("/")
+        try:
+            # Resolve both traversal components and symlinks before checking
+            # containment. A shared string prefix is not a directory boundary.
+            static_root = STATIC_DIR.resolve()
+            path = unquote(path)
+            file_path = (static_root / path.lstrip("/")).resolve()
+            file_path.relative_to(static_root)
+        except (OSError, RuntimeError, ValueError):
+            self.send_response(404)
+            self.end_headers()
+            return
         if file_path.exists() and file_path.is_file():
             content = file_path.read_bytes()
             content_type = "text/html"
@@ -2355,18 +2486,6 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 
 def main():
     config = load_config()
-    if not config["boards"]:
-        print("No boards configured, creating default config...")
-        config = {
-            "boards": [{
-                "address": "0x20",
-                "bus": 2,
-                "size": 16,
-                "name": "Board 1",
-                "relays": {str(i): f"Relay {i}" for i in range(16)},
-            }]
-        }
-        save_config(config)
 
     print("Initializing boards...")
     init_boards(config)

@@ -66,7 +66,7 @@ const fmt = (t) => t.map(s => `${s.on ? 'GREEN' : 'grey '}@${s.at}ms`).join('  -
   if (await isOn(page)) { await page.click(SEL); await page.waitForTimeout(2500); }
   check('starts grey', !(await isOn(page)));
 
-  // Wait for the optimistic paint before watching. Sampling from the instant
+  // Wait for the confirmed paint before watching. Sampling from the instant
   // of the click races the request round trip, and an initial grey there means
   // only that the answer has not arrived yet - not that anything reverted.
   const goGreen = () => page.waitForFunction(

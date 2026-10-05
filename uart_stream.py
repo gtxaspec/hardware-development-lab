@@ -1,0 +1,142 @@
+"""Read-only, on-demand fan-out of raw TCP UART consoles (standard library only)."""
+
+import codecs
+import queue
+import socket
+import threading
+
+
+class UartSubscription:
+    def __init__(self, indices, queue_size=128):
+        self.indices = frozenset(indices)
+        self.events = queue.Queue(maxsize=queue_size)
+        self.overflow = threading.Event()
+
+    def publish(self, event, data):
+        if self.overflow.is_set():
+            return
+        try:
+            self.events.put_nowait((event, data))
+        except queue.Full:
+            # A slow browser must never stall a UART or grow memory without bound.
+            self.overflow.set()
+
+
+class UartChannel:
+    def __init__(self, host, port, index, retry_delay=2.0):
+        self.host, self.port, self.index = host, port, index
+        self.retry_delay = retry_delay
+        self._cv = threading.Condition()
+        self._listeners = set()
+        self._thread = None
+        self._closed = False
+        self._status = {"uart": index, "status": "connecting"}
+
+    def add(self, subscription):
+        with self._cv:
+            self._listeners.add(subscription)
+            subscription.publish("status", dict(self._status))
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run,
+                                                name=f"uart-{self.index}", daemon=True)
+                self._thread.start()
+            self._cv.notify_all()
+
+    def remove(self, subscription):
+        with self._cv:
+            self._listeners.discard(subscription)
+            self._cv.notify_all()
+
+    def _active(self):
+        with self._cv:
+            return bool(self._listeners) and not self._closed
+
+    def _publish(self, event, **data):
+        payload = {"uart": self.index, **data}
+        with self._cv:
+            if event == "status":
+                self._status = payload
+            for listener in self._listeners:
+                listener.publish(event, payload)
+
+    def _run(self):
+        while True:
+            with self._cv:
+                while not self._listeners and not self._closed:
+                    self._status = {"uart": self.index, "status": "connecting"}
+                    self._cv.wait()
+                if self._closed:
+                    return
+            self._publish("status", status="connecting")
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            try:
+                # Only recv is used. No serial input, negotiation, or commands
+                # are sent; ser2net continues to own the underlying tty.
+                with socket.create_connection((self.host, self.port), timeout=3) as source:
+                    source.settimeout(0.5)
+                    self._publish("status", status="connected")
+                    while self._active():
+                        try:
+                            chunk = source.recv(4096)
+                        except socket.timeout:
+                            continue
+                        if not chunk:
+                            raise ConnectionError("UART connection closed")
+                        text = decoder.decode(chunk)
+                        if text:
+                            self._publish("output", text=text)
+            except OSError as error:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    self._publish("output", text=tail)
+                if self._active():
+                    self._publish("status", status="disconnected",
+                                  message=f"{error}; retrying")
+            with self._cv:
+                if self._listeners and not self._closed:
+                    self._cv.wait(timeout=self.retry_delay)
+
+    def close(self):
+        with self._cv:
+            self._closed = True
+            self._cv.notify_all()
+        if self._thread is not None:
+            self._thread.join(timeout=4)
+
+
+class UartHub:
+    """At most one upstream connection per UART, regardless of browser count."""
+
+    def __init__(self, host="127.0.0.1", base_port=3000, count=24,
+                 max_viewers=32, retry_delay=2.0):
+        if not 0 <= count <= 64 or not 1 <= base_port <= 65535 - max(0, count - 1):
+            raise ValueError("Invalid UART count or TCP port range")
+        self.channels = [UartChannel(host, base_port + i, i, retry_delay)
+                         for i in range(count)]
+        self.max_viewers = max_viewers
+        self._lock = threading.Lock()
+        self._subscriptions = set()
+
+    def subscribe(self, indices):
+        indices = frozenset(indices)
+        if not indices or not indices.issubset(range(len(self.channels))):
+            raise ValueError("Invalid UART selection")
+        with self._lock:
+            if len(self._subscriptions) >= self.max_viewers:
+                raise RuntimeError("Too many UART viewers; close another console and retry")
+            # Leave room for the initial statuses even at the 64-UART limit.
+            subscription = UartSubscription(indices, queue_size=max(128, len(indices) * 4))
+            self._subscriptions.add(subscription)
+            for index in sorted(indices):
+                self.channels[index].add(subscription)
+            return subscription
+
+    def unsubscribe(self, subscription):
+        with self._lock:
+            self._subscriptions.discard(subscription)
+            for index in subscription.indices:
+                self.channels[index].remove(subscription)
+
+    def close(self):
+        for channel in self.channels:
+            channel.close()

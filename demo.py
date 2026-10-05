@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the panel with stubbed hardware, for demos and screenshots.
 
-relay-panel.py reaches hardware only by shelling out to i2cget, i2cset,
-i2cdump and gpio. This puts fakes for those four on PATH ahead of the real
+relay-panel.py reaches hardware only by shelling out to i2ctransfer, i2cget,
+i2cset, i2cdump and gpio. This puts fakes for those tools on PATH ahead of the real
 ones and points the server at a throwaway config, so the whole UI can be
 driven on a machine with no I2C bus at all - and a bench with real hardware
 is never touched.
@@ -19,12 +19,14 @@ import glob
 import json
 import os
 import pathlib
+import selectors
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -65,7 +67,7 @@ DEMO_WHITE = 4095      # White Strip duty
 DEMO_GROUP = 1024      # RGB group master
 
 STUB = r'''#!/usr/bin/env python3
-"""Fake i2cget/i2cset/i2cdump/gpio, dispatching on argv[0]."""
+"""Fake i2ctransfer/i2cget/i2cset/i2cdump/gpio, dispatching on argv[0]."""
 import json, os, pathlib, sys
 
 TOOL = pathlib.Path(sys.argv[0]).name
@@ -81,6 +83,17 @@ def load():
 
 def save(s):
     STATE.write_text(json.dumps(s))
+
+
+def relay_read(s, addr, reg):
+    regs = s.get("i2c", {}).get(addr, {})
+    if reg in (0, 1):
+        # Input pins follow the output latch when configured as outputs.
+        output = regs.get(hex(reg + 2), 0xFF)
+        direction = regs.get(hex(reg + 6), 0xFF)
+        polarity = regs.get(hex(reg + 4), 0)
+        return (output & ~direction) ^ polarity
+    return regs.get(hex(reg), 0xFF if reg in (2, 3, 6, 7) else 0)
 
 
 def pwm_page(chan):
@@ -112,7 +125,12 @@ if TOOL == "i2cdump":
     print(pwm_page(s.setdefault("pwm", {})))
 
 elif TOOL == "i2cget":
-    print(f"0x{s['i2c'].get(a[2], {}).get(a[3], 0):02x}")
+    print(f"0x{relay_read(s, a[2], int(a[3], 16)):02x}")
+
+elif TOOL == "i2ctransfer":
+    addr, first, count = a[2].split("@", 1)[1], int(a[3], 16), int(a[4][1:])
+    print(" ".join(f"0x{relay_read(s, addr, first ^ (i % 2)):02x}"
+                   for i in range(count)))
 
 elif TOOL == "i2cset":
     addr, reg, vals = a[2], a[3], a[4:]
@@ -137,7 +155,9 @@ elif TOOL == "i2cset":
                 lvl = ((((w[3] & 0x0F) << 8) | w[2]) - on) & 0xFFF
             pwm.setdefault(str(ch), {}).update(level=lvl)
     elif vals:
-        s.setdefault("i2c", {}).setdefault(addr, {})[reg] = int(vals[0], 16)
+        regs = s.setdefault("i2c", {}).setdefault(addr, {})
+        for offset, value in enumerate(vals):
+            regs[hex(int(reg, 16) ^ (offset % 2))] = int(value, 16)
     save(s)
 
 elif TOOL == "gpio":
@@ -192,7 +212,7 @@ def build_sandbox(tmp):
     stub = binp / "_stub.py"
     stub.write_text(STUB)
     stub.chmod(0o755)
-    for tool in ("i2cget", "i2cset", "i2cdump", "gpio"):
+    for tool in ("i2ctransfer", "i2cget", "i2cset", "i2cdump", "gpio"):
         (binp / tool).symlink_to("_stub.py")
     return binp, panel
 
@@ -204,6 +224,67 @@ def seed(port):
             {"board": board, "relay": relay, "state": True})
     api(port, "POST", "/api/pwm/set", {"chip": 0, "channel": 0, "level": DEMO_WHITE})
     api(port, "POST", "/api/pwm/group", {"chip": 0, "group": 0, "level": DEMO_GROUP})
+
+
+class DemoUarts:
+    """24 local, simulated raw TCP consoles; no physical UARTs are opened."""
+
+    def __init__(self):
+        self.selector = selectors.DefaultSelector()
+        self.listeners = []
+        self.clients = {}
+        self.stop = threading.Event()
+        for attempt in range(20):
+            self.base_port = free_port()
+            if self.base_port > 65512:
+                continue
+            try:
+                for index in range(24):
+                    listener = socket.socket()
+                    self.listeners.append(listener)
+                    listener.bind(("127.0.0.1", self.base_port + index))
+                    listener.listen(8)
+                    listener.setblocking(False)
+            except OSError:
+                for listener in self.listeners:
+                    listener.close()
+                self.listeners.clear()
+            else:
+                break
+        else:
+            self.selector.close()
+            raise RuntimeError("Could not allocate simulated UART ports")
+        for index, listener in enumerate(self.listeners):
+            self.selector.register(listener, selectors.EVENT_READ, index)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        tick, next_output = 0, time.monotonic()
+        while not self.stop.is_set():
+            for key, _ in self.selector.select(timeout=0.1):
+                client, _ = key.fileobj.accept()
+                client.settimeout(0.2)
+                self.clients[client] = key.data
+            if time.monotonic() < next_output:
+                continue
+            tick += 1
+            next_output = time.monotonic() + 0.5
+            for client, index in list(self.clients.items()):
+                try:
+                    client.sendall(f"\x1b[32mttyUSB{index} demo\x1b[0m: console output {tick}\r\n".encode())
+                except OSError:
+                    client.close()
+                    del self.clients[client]
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=6)
+        for client in self.clients:
+            client.close()
+        for listener in self.listeners:
+            listener.close()
+        self.selector.close()
 
 
 def main():
@@ -223,6 +304,7 @@ def main():
     port = args.port or free_port()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="relay-panel-demo-"))
     binp, panel = build_sandbox(tmp)
+    uarts = DemoUarts()
 
     env = dict(os.environ)
     env["PATH"] = f"{binp}:{env['PATH']}"
@@ -230,6 +312,9 @@ def main():
     env["RELAY_PANEL_DIR"] = str(panel)
     env["RELAY_PANEL_PORT"] = str(port)
     env["RELAY_PANEL_HOST"] = "127.0.0.1"
+    env["RELAY_PANEL_UART_HOST"] = "127.0.0.1"
+    env["RELAY_PANEL_UART_BASE_PORT"] = str(uarts.base_port)
+    env["RELAY_PANEL_UART_COUNT"] = "24"
     if args.usb_vid:
         env["RELAY_PANEL_USB_VID"] = args.usb_vid
 
@@ -284,6 +369,7 @@ def main():
         print(f"wrote {out} ({out.stat().st_size // 1024} KiB)")
         return 0
     finally:
+        uarts.close()
         proc.terminate()
         try:
             proc.wait(timeout=5)

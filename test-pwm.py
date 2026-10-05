@@ -7,7 +7,9 @@ Pure-function tests only - no I2C, no hardware, no server. Run with:
 """
 
 import importlib.util
+import subprocess
 import sys
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("rp", "relay-panel.py")
 rp = importlib.util.module_from_spec(spec)
@@ -236,25 +238,28 @@ ck("a partly-unreadable chip still parses", (part[0x00], part[0x02]), (0x20, 0x0
 rp.i2c_cmd = saved
 
 # --- relay reads must not fake "all off" on a dead bus ----------------------
-saved = rp.i2c_cmd
-rp.i2c_cmd = lambda *a, **k: ("0x81", 0)
-ck("a good read returns both ports", rp.i2c_read_state(2, "0x20"), (0x81, 0x81))
+# Relay reads use i2ctransfer directly, so intercept the subprocess boundary.
+# Patching only i2c_cmd would let these tests reach the real I2C bus.
+with patch.object(rp.subprocess, "run", return_value=
+                  subprocess.CompletedProcess([], 0, "0x81 0x42", "")):
+    ck("a good read returns both ports", rp.i2c_read_state(2, "0x20"), (0x81, 0x42))
 
-rp.i2c_cmd = lambda *a, **k: ("Error: Read failed", 2)
-try:
-    rp.i2c_read_state(2, "0x20")
-    ck("a dead bus raises instead of reporting all-off", "returned", "raised")
-except RuntimeError as e:
-    ck("a dead bus raises instead of reporting all-off", "no response" in str(e), True)
+with patch.object(rp.subprocess, "run", return_value=
+                  subprocess.CompletedProcess([], 2, "", "Error: Read failed")):
+    try:
+        rp.i2c_read_state(2, "0x20")
+        ck("a dead bus raises instead of reporting all-off", "returned", "raised")
+    except RuntimeError as e:
+        ck("a dead bus raises instead of reporting all-off", "no response" in str(e), True)
 
 # a truncated/garbled reply must not be parsed as a real port value either
-rp.i2c_cmd = lambda *a, **k: ("", 0)
-try:
-    rp.i2c_read_state(2, "0x20")
-    ck("an empty reply raises", "returned", "raised")
-except RuntimeError:
-    ck("an empty reply raises", True, True)
-rp.i2c_cmd = saved
+with patch.object(rp.subprocess, "run", return_value=
+                  subprocess.CompletedProcess([], 0, "", "")):
+    try:
+        rp.i2c_read_state(2, "0x20")
+        ck("an empty reply raises", "returned", "raised")
+    except RuntimeError:
+        ck("an empty reply raises", True, True)
 
 print()
 if failures:
