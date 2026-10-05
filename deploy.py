@@ -17,6 +17,7 @@ Usage:
     ./deploy.py --host root@other-pi
     ./deploy.py --dry-run       # show what would be copied
     ./deploy.py --force         # deploy even if a flash looks active
+    ./deploy.py --restart       # restart and restore, even with nothing to copy
 """
 import argparse
 import hashlib
@@ -241,6 +242,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true",
                     help="deploy even if a flash appears to be in progress")
+    ap.add_argument("--restart", action="store_true",
+                    help="restart and restore the bench even when nothing changed")
     args = ap.parse_args()
     if not args.host:
         ap.error("no target: pass --host or set RELAY_PANEL_SSH")
@@ -249,15 +252,17 @@ def main():
 
     print("== changes ==")
     todo = changed_files(pi)
-    if not todo:
+    if not todo and not args.restart:
         print("  nothing to deploy, remote already matches")
         return 0
     for rel, _, restart in todo:
         print(f"  {rel}{'  (needs restart)' if restart else ''}")
+    if not todo:
+        print("  nothing to copy, restarting as asked")
     if args.dry_run:
         return 0
 
-    needs_restart = any(r for _, _, r in todo)
+    needs_restart = args.restart or any(r for _, _, r in todo)
 
     print("== pre-flight ==")
     preflight(pi, args.force)
