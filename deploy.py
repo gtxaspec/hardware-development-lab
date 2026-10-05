@@ -25,6 +25,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 
 REPO = pathlib.Path(__file__).resolve().parent
 REMOTE_DIR = "/opt/relay-panel"
@@ -87,11 +88,11 @@ class Pi:
         if r.returncode != 0:
             sys.exit(f"cannot reach {self.host}: {r.stderr.strip() or 'ssh failed'}")
 
-    def api(self, method, path, body=None):
+    def api(self, method, path, body=None, check=True):
         c = f"curl -s -X {method} -H 'Content-Type: application/json'"
         if body is not None:
             c += f" -d {json.dumps(json.dumps(body))}"
-        out = self.run(f"{c} http://localhost:8080{path}")
+        out = self.run(f"{c} http://localhost:8080{path}", check)
         return json.loads(out or "{}")
 
 
@@ -152,16 +153,38 @@ def snapshot(pi):
     return snap
 
 
+def wait_ready(pi, timeout=60):
+    """Wait for the restarted panel to answer HTTP.
+
+    systemd calls the unit active as soon as Python starts, but the server
+    listens only after initialising the hardware and taking a first sample.
+    init_boards has just cut the PWM chip's rail, so that takes over 10 s
+    while the absent chip times out, and a restore sent before then failed
+    and left the whole bench OFF.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        code = pi.run("curl -s -o /dev/null -m 3 -w '%{http_code}' "
+                      "http://localhost:8080/api/state", check=False)
+        if code == "200":
+            return True
+        time.sleep(1)
+    return False
+
+
 def restore(pi, snap):
+    # One failure must not stop the rest: the masters feed everything else.
+    def put(path, body, label):
+        res = pi.api("POST", path, body, check=False)
+        failed = "" if res and not res.get("error") else f"  FAILED {res.get('error', 'no reply')}"
+        print(f"  {label}{failed}")
+
     for b, r, name in snap["relays"]:
-        pi.api("POST", "/api/relay/set", {"board": b, "relay": r, "state": True})
-        print(f"  relay {b}/{r} {name}")
+        put("/api/relay/set", {"board": b, "relay": r, "state": True}, f"relay {b}/{r} {name}")
     for wpi, name in snap["gpios"]:
-        pi.api("POST", "/api/gpio/set", {"wpi": wpi, "state": True})
-        print(f"  gpio {wpi} {name}")
+        put("/api/gpio/set", {"wpi": wpi, "state": True}, f"gpio {wpi} {name}")
     for c, ch, lvl in snap["pwm"]:
-        pi.api("POST", "/api/pwm/set", {"chip": c, "channel": ch, "level": lvl})
-        print(f"  pwm {c}/ch{ch} -> {lvl}")
+        put("/api/pwm/set", {"chip": c, "channel": ch, "level": lvl}, f"pwm {c}/ch{ch} -> {lvl}")
 
 
 def verify(pi, snap):
@@ -257,11 +280,12 @@ def main():
     print("== restart ==")
     if any(rel == "relay-panel.service" for rel, _, _ in todo):
         pi.run("systemctl daemon-reload")
-    pi.run(f"systemctl restart {SERVICE} && sleep 2")
-    if pi.run(f"systemctl is-active {SERVICE}", check=False) != "active":
+    pi.run(f"systemctl restart {SERVICE}")
+    if not wait_ready(pi):
         print(pi.run(f"journalctl -u {SERVICE} -n 20 --no-pager -o cat", check=False))
-        sys.exit("ABORT: service did not come back")
-    print("  active")
+        off = ", ".join(name for _, _, name in snap["relays"]) or "nothing"
+        sys.exit(f"ABORT: panel did not answer; still OFF: {off}")
+    print("  answering")
 
     print("== restore ==")
     restore(pi, snap)
