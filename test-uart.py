@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from uart_stream import UartHub, UartSubscription
+from uart_stream import UartHub, UartNotConnected, UartSubscription
 
 spec = importlib.util.spec_from_file_location("relay_panel", Path(__file__).with_name("relay-panel.py"))
 rp = importlib.util.module_from_spec(spec)
@@ -130,6 +130,23 @@ class HubTests(unittest.TestCase):
         self.assertEqual(next_event(sub, "output")["text"], "after reconnect\n")
         self.hub.unsubscribe(sub)
 
+    def test_input_shares_the_viewer_connection_in_order(self):
+        with self.assertRaises(UartNotConnected):
+            self.hub.write(0, b"blind")
+        with self.assertRaises(ValueError):
+            self.hub.write(1, b"x")
+        sub = self.hub.subscribe({0})
+        self.assertEqual(next_event(sub, "status")["status"], "connecting")
+        until(lambda: self.hub.channels[0]._sock is not None)
+        for chunk in [b"l", b"s", b"\r", b"\x03"]:
+            self.hub.write(0, chunk)
+        until(lambda: self.raw.received == b"ls\r\x03")
+        self.assertEqual(self.raw.accepted, 1, "input must not open a connection of its own")
+        self.hub.unsubscribe(sub)
+        until(lambda: self.hub.channels[0]._sock is None)
+        with self.assertRaises(UartNotConnected):
+            self.hub.write(0, b"after the last viewer left")
+
     def test_invalid_selection_and_viewer_limit(self):
         for indices in [set(), {-1}, {1}]:
             with self.assertRaises(ValueError):
@@ -176,6 +193,21 @@ class HttpTests(unittest.TestCase):
         connection.request("GET", path, headers=headers or {})
         return connection, connection.getresponse()
 
+    def post(self, body, headers=None, raw=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=4)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/api/uart/input", raw if raw is not None else json.dumps(body),
+                           {"Content-Type": "application/json", **(headers or {})})
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+
+    def viewer(self):
+        """Open a stream and wait until its UART is connected upstream."""
+        _, response = self.request("/api/uart/stream?uart=0")
+        self.assertEqual(self.event(response, "ready")["uarts"], [0])
+        until(lambda: self.hub.channels[0]._sock is not None)
+        return response
+
     def event(self, response, wanted):
         kind = ""
         for _ in range(100):
@@ -190,7 +222,7 @@ class HttpTests(unittest.TestCase):
         _, response = self.request("/api/uarts")
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(response.read())["uarts"],
-                         [{"index": 0, "name": "ttyUSB0", "port": self.raw.port}])
+                         [{"index": 0, "name": "ttyUSB0", "port": self.raw.port, "input": True}])
         self.assertEqual(self.raw.accepted, 0, "listing opened a UART")
         connection, response = self.request("/api/uart/stream?uart=all")
         self.assertEqual(response.status, 200)
@@ -227,6 +259,54 @@ class HttpTests(unittest.TestCase):
             response.close()
             until(lambda: not self.hub._subscriptions)
 
+
+    def test_input_needs_a_viewer_and_never_moves_the_bench(self):
+        status, body = self.post({"uart": 0, "data": "ls\r"})
+        self.assertEqual(status, 409)
+        self.assertEqual(self.raw.accepted, 0, "input must not open a UART")
+        self.viewer()
+        with patch.object(rp.sampler, "nudge") as nudge:
+            status, body = self.post({"uart": 0, "data": "ls\r"})
+        self.assertEqual((status, body["bytes"]), (200, 3))
+        self.assertNotIn("write_seq", body)
+        nudge.assert_not_called()
+        until(lambda: self.raw.received == b"ls\r")
+
+    def test_input_refuses_cross_site_and_malformed_requests(self):
+        self.viewer()
+        host = f"127.0.0.1:{self.server.server_port}"
+        cases = [
+            ({"Content-Type": "text/plain"}, {"uart": 0, "data": "a"}, 415),
+            ({"Origin": "http://attacker.example"}, {"uart": 0, "data": "b"}, 403),
+            ({"Origin": "null"}, {"uart": 0, "data": "c"}, 403),
+            ({}, {"uart": "0", "data": "d"}, 400),
+            ({}, {"uart": 1, "data": "e"}, 400),
+            ({}, {"uart": 0, "data": ""}, 400),
+            ({}, {"uart": 0, "data": 5}, 400),
+            ({}, [0, "f"], 400),
+            ({}, {"uart": 0, "data": "g" * (rp.UART_INPUT_MAX + 1)}, 413),
+        ]
+        for headers, body, expected in cases:
+            self.assertEqual(self.post(body, headers)[0], expected, (headers, body))
+        self.assertEqual(self.post({"uart": 0, "data": "ok"}, {"Origin": f"http://{host}"})[0], 200)
+        until(lambda: self.raw.received == b"ok")
+
+    def test_tokens_need_a_separate_input_grant(self):
+        allowed = {"uarts": [0]}
+        with patch.object(rp.RelayHandler, "_token_scope", side_effect=lambda: (True, allowed)):
+            _, response = self.request("/api/uarts")
+            listing = json.loads(response.read())
+            self.assertEqual((listing["uarts"][0]["input"], listing["read_only"]), (False, True))
+            self.viewer()
+            self.assertEqual(self.post({"uart": 0, "data": "x"})[0], 403)
+            allowed["uart_input"] = [0]
+            _, response = self.request("/api/uarts")
+            self.assertEqual(json.loads(response.read())["uarts"][0]["input"], True)
+            self.assertEqual(self.post({"uart": 0, "data": "y"})[0], 200)
+            del allowed["uarts"]
+            self.assertEqual(self.post({"uart": 0, "data": "z"})[0], 403,
+                             "typing must not outlive the right to watch")
+        until(lambda: self.raw.received == b"y")
 
 
 if __name__ == "__main__":

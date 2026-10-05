@@ -24,6 +24,19 @@ async function output(page, pattern) {
   await page.waitForFunction(pattern => new RegExp(pattern).test(document.getElementById('uartOutput').textContent), pattern);
 }
 
+async function connected(page) {
+  await page.waitForFunction(() => document.getElementById('uartConnection').textContent === 'Connected');
+}
+
+// Every body POSTed to the input endpoint, in the order the page sent them.
+function inputs(page) {
+  const sent = [];
+  page.on('request', request => {
+    if (request.url().endsWith('/api/uart/input')) sent.push(request.postDataJSON());
+  });
+  return sent;
+}
+
 async function test(name, run) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
   const errors = [];
@@ -306,6 +319,172 @@ async function test(name, run) {
     assert.equal(requests.some(url => url.includes('/api/state') || url.includes('test-console-access')), false);
     await popup.goto(panel + '?console=invalid');
     assert.match(await popup.locator('#uartHelp').textContent(), /Invalid UART/);
+  });
+
+  await test('consoles open read only, and interactive never outlives its console', async page => {
+    const sent = inputs(page);
+    await open(page);
+    await page.click(port(3));
+    await connected(page);
+    assert.equal(await page.isVisible('#uartInteractiveLabel'), true);
+    assert.equal(await page.isChecked('#uartInteractive'), false);
+    assert.equal(await page.isHidden('#uartInput'), true);
+    await page.focus('#uartOutput');
+    await page.keyboard.type('reboot');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Control+c');
+    await page.check('#uartInteractive');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'uartInput');
+    const opened = page.waitForEvent('popup');
+    await page.click('#uartPopout');
+    const popup = await opened;
+    await connected(popup);
+    assert.equal(await popup.isChecked('#uartInteractive'), false, 'a pop-out starts read only');
+    await popup.close();
+    await page.click(port(4));
+    await connected(page);
+    assert.equal(await page.isChecked('#uartInteractive'), false, 'switching UART kept typing on');
+    await page.click(port(3));
+    await connected(page);
+    assert.equal(await page.isChecked('#uartInteractive'), false);
+    await page.check('#uartInteractive');
+    await page.click('#uartConnect');
+    assert.equal(await page.isChecked('#uartInteractive'), false);
+    assert.equal(await page.isDisabled('#uartInteractive'), true);
+    await page.click(port('all'));
+    assert.equal(await page.isVisible('#uartInteractiveLabel'), false, 'All UARTs has no single target');
+    await pause(300);
+    assert.deepEqual(sent, [], 'read-only consoles sent input');
+  });
+
+  await test('typing reaches the console in order, with line edits and control keys', async page => {
+    const sent = inputs(page);
+    await open(page);
+    await page.click(port(5));
+    await connected(page);
+    await page.check('#uartInteractive');
+    await page.keyboard.type('helo');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type('p');
+    // The echo of the backspace is \b ESC[J; the trailing space is the cursor cell.
+    await page.waitForFunction(() => uartOutput.textContent.split('\n').pop() === 'help ');
+    assert.equal(await page.locator('#uartOutput .uart-cursor').count(), 1);
+    await page.keyboard.press('Enter');
+    await output(page, "demo: ran 'help'");
+    await page.keyboard.type('ab');
+    for (const key of ['ArrowLeft', 'ArrowUp', 'Tab', 'Escape', 'Delete', 'Control+a', 'Control+c']) {
+      await page.keyboard.press(key);
+    }
+    await output(page, '\\^C');
+    await page.waitForFunction(() => uartOutput.textContent.split('\n').pop() === 'demo$  ');
+    assert.equal(sent.map(body => body.data).join(''),
+      'helo\x7fp\rab\x1b[D\x1b[A\t\x1b\x1b[3~\x01\x03');
+    assert.ok(sent.every(body => body.uart === 5));
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'uartInput', 'Tab must not leave the console');
+    await page.keyboard.press('Shift+Tab');
+    assert.notEqual(await page.evaluate(() => document.activeElement.id), 'uartInput', 'Shift+Tab must leave it');
+  });
+
+  await test('a selection keeps Ctrl+C for copying, and multi-line paste asks first', async page => {
+    const sent = inputs(page);
+    await open(page);
+    await page.click(port(6));
+    await output(page, 'ttyUSB6 demo');
+    await page.check('#uartInteractive');
+    // Dispatched rather than pressed: a repaint between selecting and pressing
+    // would drop the selection and turn the copy into a real interrupt.
+    const ctrlC = () => page.evaluate(() => uartOutput.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'c', ctrlKey: true, bubbles: true, cancelable: true })));
+    const copied = await page.evaluate(() => {
+      const range = document.createRange();
+      range.selectNodeContents(uartOutput.firstChild);
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+      return !uartOutput.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    assert.equal(copied, false, 'Ctrl+C over a selection was taken from the browser');
+    await page.evaluate(() => getSelection().removeAllRanges());
+    await ctrlC();
+    const dialogs = [];
+    page.on('dialog', dialog => {
+      dialogs.push(dialog.message());
+      return dialogs.length === 1 ? dialog.dismiss() : dialog.accept();
+    });
+    const paste = text => page.evaluate(text => {
+      const data = new DataTransfer(); data.setData('text/plain', text);
+      uartInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, text);
+    await paste('echo 1\necho 2\n');
+    await paste('echo 1\r\necho 2\n');
+    await paste('uname\n');
+    await page.keyboard.insertText('ls');
+    const deadline = Date.now() + 4000;
+    while (sent.map(body => body.data).join('') !== '\x03echo 1\recho 2\runame\rls' && Date.now() < deadline) await pause(50);
+    assert.equal(sent.map(body => body.data).join(''), '\x03echo 1\recho 2\runame\rls');
+    assert.equal(dialogs.length, 2, 'only multi-line pastes ask');
+    assert.match(dialogs[0], /^Paste 2 lines into ttyUSB6\?/);
+  });
+
+  await test('refused input is dropped, never replayed, and view-only access hides the switch', async page => {
+    await open(page);
+    await page.click(port(7));
+    await connected(page);
+    await page.check('#uartInteractive');
+    await page.route('**/api/uart/input', route => route.fulfill({ status: 409,
+      json: { error: 'ttyUSB7 is not connected; open its console first' } }));
+    await page.keyboard.type('rm');
+    await page.waitForFunction(() => /not connected/.test(document.getElementById('toasts').textContent));
+    await page.unroute('**/api/uart/input');
+    const sent = inputs(page);
+    await page.keyboard.type('x');
+    await output(page, 'x');
+    assert.deepEqual(sent.map(body => body.data), ['x'], 'input queued before the failure was replayed');
+    await page.route('**/api/uarts', route => route.fulfill({ json: {
+      uarts: [{ index: 7, name: 'ttyUSB7', port: 3007, input: false }], read_only: true } }));
+    await page.click('#uartSection > summary');
+    await page.click('#uartSection > summary');
+    await page.waitForFunction(() => document.querySelectorAll('[data-uart]').length === 2);
+    await page.click(port(7));
+    await connected(page);
+    assert.equal(await page.isVisible('#uartInteractiveLabel'), false);
+    assert.match(await page.locator('#uartHint').textContent(), /^Output starts/);
+  });
+
+  await test('line-editor escapes rewrite the current line instead of piling up', async page => {
+    const result = await page.evaluate(() => {
+      const run = (...chunks) => {
+        const log = new UartLog();
+        for (const chunk of chunks) log.feed(0, chunk);
+        const size = log.lines.reduce((total, row) => total + row.chars.length, 0);
+        return { text: log.text(false), consistent: size === log.size, split: log.split(0) };
+      };
+      return {
+        backspace: run('# lsx', '\b\x1b[', 'J'),
+        history: run('# ls -la', '\r# pwd\x1b[J'),
+        edits: run('abcdef\x1b[3D\x1b[P\x1b[2@XY\x1b[C\x1b[K'),
+        eraseStart: run('hello world\x1b[6G\x1b[1K'),
+        eraseChars: run('hello world\x1b[3G\x1b[3X'),
+        eraseLine: run('old text\x1b[2Knew'),
+        redraw: run('old text\r\x1b[2Knew'),
+        screen: run('keep\x1b[?25l\x1b[2J\x1b[H\x1b[1;1H\x1b[6n\x1b[999C!'),
+        back: run('ab\x1b[999D!'),
+        cursor: run('one\ntwo\x1b[2D'),
+        fresh: run('one\n'),
+        empty: run(),
+      };
+    });
+    assert.equal(result.backspace.text, '# ls');
+    assert.equal(result.history.text, '# pwd');
+    assert.equal(result.edits.text, 'abcXYe');
+    assert.equal(result.eraseStart.text, '      world');
+    assert.equal(result.eraseChars.text, 'he    world');
+    assert.equal(result.eraseLine.text, '        new');
+    assert.equal(result.redraw.text, 'new');
+    assert.equal(result.screen.text, 'keep!');
+    assert.equal(result.back.text, '!b');
+    assert.deepEqual(result.cursor.split, ['one\nt', 'w', 'o']);
+    assert.deepEqual(result.fresh.split, ['one\n', ' ', '']);
+    assert.deepEqual(result.empty.split, ['', ' ', '']);
+    for (const [name, outcome] of Object.entries(result)) assert.ok(outcome.consistent, `${name} miscounted its size`);
   });
 
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);

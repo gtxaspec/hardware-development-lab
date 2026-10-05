@@ -1,9 +1,13 @@
-"""Read-only, on-demand fan-out of raw TCP UART consoles (standard library only)."""
+"""On-demand fan-out of raw TCP UART consoles (standard library only)."""
 
 import codecs
 import queue
 import socket
 import threading
+
+
+class UartNotConnected(Exception):
+    """Input arrived for a UART with no live upstream connection."""
 
 
 class UartSubscription:
@@ -27,6 +31,10 @@ class UartChannel:
         self.host, self.port, self.index = host, port, index
         self.retry_delay = retry_delay
         self._cv = threading.Condition()
+        # Held across every send and while the reader drops the socket, so a
+        # write can never land on a descriptor number the kernel has reused.
+        self._write_lock = threading.Lock()
+        self._sock = None
         self._listeners = set()
         self._thread = None
         self._closed = False
@@ -70,21 +78,27 @@ class UartChannel:
             self._publish("status", status="connecting")
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             try:
-                # Only recv is used. No serial input, negotiation, or commands
-                # are sent; ser2net continues to own the underlying tty.
+                # Nothing is sent but what write() is handed: no telnet
+                # negotiation, no line handling.
                 with socket.create_connection((self.host, self.port), timeout=3) as source:
                     source.settimeout(0.5)
-                    self._publish("status", status="connected")
-                    while self._active():
-                        try:
-                            chunk = source.recv(4096)
-                        except socket.timeout:
-                            continue
-                        if not chunk:
-                            raise ConnectionError("UART connection closed")
-                        text = decoder.decode(chunk)
-                        if text:
-                            self._publish("output", text=text)
+                    with self._write_lock:
+                        self._sock = source
+                    try:
+                        self._publish("status", status="connected")
+                        while self._active():
+                            try:
+                                chunk = source.recv(4096)
+                            except socket.timeout:
+                                continue
+                            if not chunk:
+                                raise ConnectionError("UART connection closed")
+                            text = decoder.decode(chunk)
+                            if text:
+                                self._publish("output", text=text)
+                    finally:
+                        with self._write_lock:
+                            self._sock = None
             except OSError as error:
                 tail = decoder.decode(b"", final=True)
                 if tail:
@@ -95,6 +109,18 @@ class UartChannel:
             with self._cv:
                 if self._listeners and not self._closed:
                     self._cv.wait(timeout=self.retry_delay)
+
+    def write(self, data):
+        """Send raw bytes to the UART over the connection viewers share.
+
+        ser2net delivers bytes from any of its clients to the tty, so this
+        needs no connection of its own. With no viewer there is no
+        connection, and input nobody can see the answer to is refused.
+        """
+        with self._write_lock:
+            if self._sock is None:
+                raise UartNotConnected(f"UART {self.index} is not connected")
+            self._sock.sendall(data)
 
     def close(self):
         with self._cv:
@@ -130,6 +156,11 @@ class UartHub:
             for index in sorted(indices):
                 self.channels[index].add(subscription)
             return subscription
+
+    def write(self, index, data):
+        if not 0 <= index < len(self.channels):
+            raise ValueError("Invalid UART")
+        self.channels[index].write(data)
 
     def unsubscribe(self, subscription):
         with self._lock:

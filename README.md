@@ -24,7 +24,7 @@ Try it with no hardware at all:
 | **GPIOs** | Orange Pi header pins via `wiringOP` | wiringPi number | on / off / toggle |
 | **LED PWM** | PCA9685 16-channel, driving 12 V strips through MOSFET modules | bus + address, typically `0x40` | 12-bit duty per channel, 24–1526 Hz, channel groups |
 | **USB** | Ingenic bootrom / U-Boot DFU gadget | read-only | shows what is flashable right now |
-| **UART** | Raw TCP consoles provided by ser2net | `ttyUSB0`–`ttyUSB23`, ports 3000–3023 by default | read-only live output, individually or all together |
+| **UART** | Raw TCP consoles provided by ser2net | `ttyUSB0`–`ttyUSB23`, ports 3000–3023 by default | live output, individually or all together; typing when switched to interactive |
 
 The PWM section exists to simulate day/night transitions for camera testing:
 continuous, repeatable light levels rather than the relay-binary room light the
@@ -136,7 +136,7 @@ Not required, but this rig is noticeably better with them:
 
 ```
 relay-panel.py       the server: HTTP API + hardware access. Pure stdlib.
-uart_stream.py       on-demand, read-only TCP console fan-out
+uart_stream.py       on-demand TCP console fan-out and input
 static/index.html    the whole web UI, single file, no build step
 mcp-server.py        MCP server exposing the API as tools (30 of them)
 deploy.py            state-preserving deploy to the Orange Pi
@@ -296,10 +296,26 @@ streaming independently when the main panel switches ports or closes. Follow,
 Clear, and Connect/Disconnect remain available. You can bookmark the window's
 `?console=0` (or `?console=all`) URL; a reload starts fresh live output.
 
-The viewer is read-only and sends no serial input. Connections open on demand;
-multiple browser viewers share one upstream connection per UART. Closing the
-section or clicking **Disconnect** stops that viewer. The last upstream viewer
-disconnects shortly afterward, including for quiet consoles.
+Connections open on demand; multiple browser viewers share one upstream
+connection per UART. Closing the section or clicking **Disconnect** stops that
+viewer. The last upstream viewer disconnects shortly afterward, including for
+quiet consoles.
+
+Consoles open read only. To type into one, tick **Interactive** in its toolbar
+(single UARTs only, never **All UARTs**), then click the output. Keys go to the
+device as a terminal sends them: Enter as CR, Backspace as DEL, arrows and
+Home/End/Delete as escape sequences, Ctrl+letter as control characters. Ctrl+C
+copies when console text is selected and interrupts otherwise; Ctrl+V pastes,
+and a paste of more than one line asks first. Tab is sent to the device, so
+Shift+Tab is the way out of the console. Switching UART, disconnecting, closing
+the section, or popping out always starts read only again. The browser keeps
+some shortcuts for itself, such as Ctrl+W, Ctrl+T and Ctrl+N, so those never
+reach the device.
+
+Input shares the upstream connection, and ser2net passes bytes from any of its
+clients to the tty, so typing here mixes with anything else connected to that
+port, `uart-monitor` included. U-Boot does not read the UART while a command
+runs, so a multi-line paste into it can lose characters after the first line.
 
 **Follow output** scrolls as data arrives; scrolling back turns it off.
 **Clear** clears the visible buffer. Disconnections retry automatically, and
@@ -308,13 +324,17 @@ console waits for new output; it does not prove the attached device is powered.
 
 Output starts when you connect, with no history replay. The browser keeps up to
 2,000 lines or 200,000 characters and trims very long lines. It renders plain
-text with basic carriage-return/backspace handling and strips terminal escape
-sequences; this is a log viewer, not a full-screen terminal emulator.
+text, applies the in-line edits a shell's line editor sends (backspace, cursor
+left and right, erase to end of line, insert and delete characters), and strips
+other terminal escape sequences. It is a log viewer, not a full-screen terminal
+emulator: `vi`, `top` and menu-driven tools will not draw correctly.
 
 UART access follows the panel's existing trusted-network/token rules. Scoped
 tokens need an explicit `"uarts": [0, 1, ...]` list in their `allowed` map;
-existing relay-only tokens do not gain console access. See [API.md](API.md#uart-consoles)
-for streaming events and token examples.
+existing relay-only tokens do not gain console access. Typing is a separate
+grant, `"uart_input": [0, 1, ...]`, honored only for UARTs also in `uarts`; a
+token without it stays read only. See [API.md](API.md#uart-consoles) for
+streaming events, input, and token examples.
 
 ## Configuration
 
@@ -466,9 +486,12 @@ slider recovery, and editing/focus preservation. Install Playwright separately
 or set `RELAY_PANEL_PLAYWRIGHT` to its module path; the suite reports a skip when
 it is unavailable.
 
-The UART suites check shared upstream connections, read-only behavior, UTF-8
+The UART suites check shared upstream connections, the read-only default, UTF-8
 fragments, authorization/revocation, reconnects, port switching, bounded buffers,
-scrolling, narrow screens, and isolation from relay keyboard shortcuts.
+scrolling, narrow screens, and isolation from relay keyboard shortcuts. For
+input they cover key and paste handling, ordered delivery over the viewer's
+connection, line-editor redraws, dropped (never replayed) input after a
+failure, and refusal of cross-site, malformed, and ungranted requests.
 They also cover separate console windows, scrollback transfer, popup blocking,
 window resizing, and token entry without starting hardware polling.
 

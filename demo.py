@@ -227,12 +227,19 @@ def seed(port):
 
 
 class DemoUarts:
-    """24 local, simulated raw TCP consoles; no physical UARTs are opened."""
+    """24 local, simulated raw TCP consoles; no physical UARTs are opened.
+
+    Each answers typing like a minimal shell: echo, backspace redrawn the way
+    busybox ash does it (\\b ESC[J), Ctrl-C, and a reply per line.
+    """
 
     def __init__(self):
         self.selector = selectors.DefaultSelector()
         self.listeners = []
         self.clients = {}
+        self.lines = {}
+        self.escapes = {}
+        self.quiet_until = {}
         self.stop = threading.Event()
         for attempt in range(20):
             self.base_port = free_port()
@@ -255,27 +262,85 @@ class DemoUarts:
             self.selector.close()
             raise RuntimeError("Could not allocate simulated UART ports")
         for index, listener in enumerate(self.listeners):
-            self.selector.register(listener, selectors.EVENT_READ, index)
+            self.selector.register(listener, selectors.EVENT_READ, ("listen", index))
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+    def _drop(self, client):
+        self.selector.unregister(client)
+        client.close()
+        del self.clients[client]
+
+    def _echo(self, index, text):
+        # A device echoes to every ser2net client, not just the one typing.
+        for client, owner in list(self.clients.items()):
+            if owner == index:
+                try:
+                    client.sendall(text.encode())
+                except OSError:
+                    self._drop(client)
+
+    def _typed(self, index, data):
+        # Chatter pauses while someone types, so a half-typed line stays whole.
+        self.quiet_until[index] = time.monotonic() + 3
+        line = self.lines.setdefault(index, [])
+        escape = self.escapes.get(index, "")
+        for char in data.decode(errors="replace"):
+            # Arrow and editing keys arrive as escape sequences; ignore them.
+            if escape == "esc":
+                escape = "csi" if char == "[" else ""
+            elif escape == "csi":
+                escape = "" if "@" <= char <= "~" else "csi"
+            elif char == "\x1b":
+                escape = "esc"
+            elif char in "\r\n":
+                command = "".join(line)
+                line.clear()
+                reply = f"demo: ran '{command}'\r\n" if command else ""
+                self._echo(index, f"\r\n{reply}demo$ ")
+            elif char in "\x7f\b":
+                if line:
+                    line.pop()
+                    self._echo(index, "\b\x1b[J")
+            elif char == "\x03":
+                line.clear()
+                self._echo(index, "^C\r\ndemo$ ")
+            elif char >= " ":
+                line.append(char)
+                self._echo(index, char)
+        self.escapes[index] = escape
 
     def _run(self):
         tick, next_output = 0, time.monotonic()
         while not self.stop.is_set():
             for key, _ in self.selector.select(timeout=0.1):
-                client, _ = key.fileobj.accept()
-                client.settimeout(0.2)
-                self.clients[client] = key.data
+                kind, index = key.data
+                if kind == "listen":
+                    client, _ = key.fileobj.accept()
+                    client.settimeout(0.2)
+                    self.clients[client] = index
+                    self.selector.register(client, selectors.EVENT_READ, ("client", index))
+                    continue
+                try:
+                    data = key.fileobj.recv(4096)
+                except OSError:
+                    data = b""
+                if data:
+                    self._typed(index, data)
+                elif key.fileobj in self.clients:
+                    self._drop(key.fileobj)
             if time.monotonic() < next_output:
                 continue
             tick += 1
             next_output = time.monotonic() + 0.5
+            now = time.monotonic()
             for client, index in list(self.clients.items()):
+                if self.lines.get(index) or now < self.quiet_until.get(index, 0):
+                    continue
                 try:
                     client.sendall(f"\x1b[32mttyUSB{index} demo\x1b[0m: console output {tick}\r\n".encode())
                 except OSError:
-                    client.close()
-                    del self.clients[client]
+                    self._drop(client)
 
     def close(self):
         self.stop.set()

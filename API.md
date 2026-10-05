@@ -79,15 +79,17 @@ curl -s "$PANEL/api/uarts"
 ```
 
 Returns the UARTs the caller may view. Listing does not open any upstream
-connections. Example with two configured UARTs:
+connections. `input` says whether the caller may also type into that UART, and
+`read_only` is true when it may type into none of them. Example with two
+configured UARTs, for a token granted input on `ttyUSB0` only:
 
 ```json
 {
   "uarts": [
-    {"index": 0, "name": "ttyUSB0", "port": 3000},
-    {"index": 1, "name": "ttyUSB1", "port": 3001}
+    {"index": 0, "name": "ttyUSB0", "port": 3000, "input": true},
+    {"index": 1, "name": "ttyUSB1", "port": 3001, "input": false}
   ],
-  "read_only": true,
+  "read_only": false,
   "server_id": "opaque-process-id"
 }
 ```
@@ -132,7 +134,8 @@ quiet. Upstream TCP failures retry automatically; clients should reconnect if
 the HTTP stream closes, except after an access denial. There is no history
 replay or `Last-Event-ID` recovery. Invalid UTF-8 is replaced with `�`.
 
-The server never sends bytes to the UART. Browser subscribers share one raw
+The stream itself never sends bytes to the UART; only
+[`POST /api/uart/input`](#send-input) does. Browser subscribers share one raw
 TCP connection per selected UART, which closes when its last viewer leaves.
 Each HTTP viewer has a bounded queue, with a maximum of 32 concurrent viewers.
 Clients must parse JSON text and render it as text, not HTML.
@@ -155,6 +158,46 @@ curl -N -H "Authorization: Bearer $TOKEN" "$PANEL/api/uart/stream?uart=all"
 
 Open streams recheck permission every five seconds. The UI uses streaming
 `fetch` so the bearer token stays in the header rather than the URL.
+
+### Send input
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"uart": 0, "data": "printenv\r"}' "$PANEL/api/uart/input"
+```
+
+Writes `data`, UTF-8 encoded, to the UART exactly as given: no line ending is
+added, so send `\r` for Enter and `\u0003` for Ctrl-C. At most 4096 bytes per
+request. Returns `{"ok": true, "uart": 0, "bytes": 9}`.
+
+Input travels over the upstream connection that viewers share, so the UART must
+have at least one open stream: input nobody can see the answer to is refused
+with 409 rather than opening a connection for it. ser2net passes bytes from any
+of its clients to the tty, so this mixes with anything else connected to the
+same port. Send one request at a time to keep keystrokes in order; the UI queues
+them and drops whatever is still queued after a failure instead of retrying.
+
+The request must be `Content-Type: application/json`, and a browser `Origin`
+must match the panel's own host (403 otherwise), so another site cannot type
+into a bench device. Input needs the same trusted source or token as viewing,
+plus, for scoped tokens, a `uart_input` grant for that index, effective only
+alongside `uarts`:
+
+```json
+{"tokens": {"<sha256-of-token>": {"allowed": {"uarts": [0, 1], "uart_input": [0]}}}}
+```
+
+| Status | Meaning |
+|---|---|
+| 400 | Not a JSON object, invalid `uart`, or `data` not a non-empty string |
+| 403 | No input grant for this UART, or a foreign `Origin` |
+| 409 | No open stream for this UART, so no upstream connection |
+| 413 | `data` over 4096 bytes once encoded |
+| 415 | Content type is not `application/json` |
+| 503 | The upstream write failed |
+
+Input does not count as a bench write: the response carries no `write_seq` and
+triggers no hardware resample.
 
 ## Control Relays
 

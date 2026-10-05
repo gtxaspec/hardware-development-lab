@@ -910,12 +910,23 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-toolbar h3 { margin: 0; font-size: 0.9rem; }
 .uart-connection { color: var(--text-dim); font-size: 0.75rem; }
 .uart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-left: auto; }
-.uart-follow { display: flex; align-items: center; gap: 0.25rem; color: var(--text-dim); font-size: 0.75rem; }
+.uart-check { display: flex; align-items: center; gap: 0.25rem; color: var(--text-dim); font-size: 0.75rem; }
+.uart-check[hidden] { display: none; }
+#uartInteractive { accent-color: var(--warn, #e0a020); }
+#uartInteractiveLabel:has(:checked) { color: var(--warn, #e0a020); }
 .uart-output { margin: 0; padding: 0.75rem; height: 24rem; max-height: 60vh; overflow: auto; white-space: pre;
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
   font: 0.75rem/1.5 'SF Mono', 'Fira Code', monospace; tab-size: 8; }
 .uart-output:empty::before { content: 'Waiting for console output…'; color: var(--text-muted); }
 .uart-output:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#uartConsole { position: relative; }
+.uart-output.interactive { border-color: var(--warn, #e0a020); cursor: text; }
+.uart-output.typing { box-shadow: 0 0 0 1px var(--warn, #e0a020); }
+.uart-cursor { box-shadow: inset 0 0 0 1px var(--text-dim); }
+.uart-output.typing .uart-cursor { background: var(--text); color: var(--bg); box-shadow: none; }
+/* Receives keystrokes and soft-keyboard text; 16px stops iOS zooming on focus. */
+.uart-input { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0;
+  opacity: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
 @media (max-width: 600px) {
   .uart-container { padding: 0 0.75rem 3rem; }
   .uart-section > summary { padding: 0.75rem; }
@@ -965,7 +976,7 @@ body.edit-mode .board-name { cursor: pointer; }
 
 <div class="uart-container">
   <details class="uart-section" id="uartSection">
-    <summary>UART consoles <span class="uart-subtitle">Live serial output · read only</span></summary>
+    <summary>UART consoles <span class="uart-subtitle">Live serial output · read only by default</span></summary>
     <div class="uart-body">
       <p id="uartHelp" class="uart-help" role="status">Select a UART to start streaming.</p>
       <div id="uartPorts" class="uart-ports" aria-label="UART selection"></div>
@@ -974,7 +985,9 @@ body.edit-mode .board-name { cursor: pointer; }
           <h3 id="uartName">Console</h3>
           <span id="uartConnection" class="uart-connection" role="status">Disconnected</span>
           <div class="uart-controls">
-            <label class="uart-follow"><input type="checkbox" id="uartFollow" checked>Follow output</label>
+            <label class="uart-check" id="uartInteractiveLabel" hidden title="Send what you type to this UART">
+              <input type="checkbox" id="uartInteractive">Interactive</label>
+            <label class="uart-check"><input type="checkbox" id="uartFollow" checked>Follow output</label>
             <button class="btn-surface btn-sm" id="uartClear" type="button">Clear</button>
             <button class="btn-surface btn-sm" id="uartPopout" type="button"
                     title="Open this console in a separate window" aria-label="Pop out console (opens a new window)">Pop out</button>
@@ -982,6 +995,8 @@ body.edit-mode .board-name { cursor: pointer; }
           </div>
         </div>
         <pre id="uartOutput" class="uart-output" tabindex="0" role="region" aria-label="UART console output"></pre>
+        <textarea id="uartInput" class="uart-input" tabindex="-1" hidden aria-label="Type into the console"
+                  autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
         <div id="uartHint" class="uart-hint">Output starts when you connect. Closing this section disconnects the viewer.</div>
       </div>
     </div>
@@ -2764,7 +2779,7 @@ function escAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// --- Read-only UART consoles ---
+// --- UART consoles (read only until switched to interactive) ---
 if (uartWindowMode) {
   // A standalone section avoids a collapsible details wrapper around the flex layout.
   const details = document.getElementById('uartSection');
@@ -2781,9 +2796,18 @@ let uartSession = null;
 let uartListRequest = 0;
 let uartPaintTimer = null;
 const uartStates = new Map();
+const uartInput = document.getElementById('uartInput');
+const uartCursor = Object.assign(document.createElement('span'), { className: 'uart-cursor' });
+// Never persisted: every console opens read only, whatever the last one was.
+let uartInteractive = false;
+let uartInputQueue = '';
+let uartInputBusy = false;
+let uartLastInput = 0;
+let uartInputNoticeAt = -Infinity;
+const UART_INPUT_QUEUE_MAX = 16384;
 
-// A bounded log, not a terminal that can send input. Keep unfinished lines per
-// UART so prompts appear immediately and interleaved consoles keep their labels.
+// A bounded log, not a terminal screen. Keep unfinished lines per UART so
+// prompts appear immediately and interleaved consoles keep their labels.
 class UartLog {
   constructor() { this.lines = []; this.sources = new Map(); this.size = 0; this.trimmed = false; }
   feed(index, text) {
@@ -2806,6 +2830,7 @@ class UartLog {
       if (source.escape === 'esc') {
         source.escape = char === '[' ? 'csi' : ']P_X^'.includes(char) ? 'string'
           : char >= ' ' && char <= '/' ? 'esc-intermediate' : '';
+        source.params = '';
         continue;
       }
       if (source.escape === 'esc-intermediate') {
@@ -2813,7 +2838,8 @@ class UartLog {
         continue;
       }
       if (source.escape === 'csi') {
-        if (char >= '@' && char <= '~') source.escape = '';
+        if (char >= '@' && char <= '~') { source.escape = ''; this.edit(source, char); }
+        else if (source.params.length < 32) source.params += char;
         continue;
       }
       if (source.escape === 'string') {
@@ -2823,7 +2849,7 @@ class UartLog {
       }
       if (source.escape === 'string-esc') { source.escape = char === '\\' ? '' : 'string'; continue; }
       if (char === '\x1b') { source.escape = 'esc'; continue; }
-      if (char === '\x9b') { source.escape = 'csi'; continue; }
+      if (char === '\x9b') { source.escape = 'csi'; source.params = ''; continue; }
       if (char === '\n') { row(); source.row = null; source.cursor = 0; }
       else if (char === '\r') source.cursor = 0;
       else if (char === '\b') source.cursor = Math.max(0, source.cursor - 1);
@@ -2837,6 +2863,43 @@ class UartLog {
       if (owner.row === removed) { owner.row = null; owner.cursor = 0; }
       this.trimmed = true;
     }
+  }
+  // In-line edits only. A line editor (busybox ash, readline) redraws with
+  // these, e.g. backspace as \b ESC[J, and a log that dropped them would keep
+  // every deleted character. Screen addressing and clears mean nothing here.
+  edit(source, final) {
+    const line = source.row;
+    if (!line || !/^[\d;]*$/.test(source.params)) return;
+    const n = parseInt(source.params, 10) || 0, count = Math.max(1, n);
+    const chars = line.chars, before = chars.length;
+    switch (final) {
+      case 'D': source.cursor = Math.max(0, source.cursor - count); break;
+      case 'C': source.cursor = Math.min(chars.length, source.cursor + count); break;
+      case 'G': source.cursor = Math.min(chars.length, count - 1); break;
+      case 'J': if (n === 0) chars.length = source.cursor; break;
+      case 'K':
+        if (n === 0) chars.length = source.cursor;
+        else if (n === 1) chars.fill(' ', 0, Math.min(chars.length, source.cursor + 1));
+        else if (n === 2) { chars.length = source.cursor; chars.fill(' '); }
+        break;
+      case 'P': chars.splice(source.cursor, count); break;
+      case '@': chars.splice(source.cursor, 0, ...' '.repeat(Math.min(count, 4096 - chars.length))); break;
+      case 'X': chars.fill(' ', source.cursor, Math.min(chars.length, source.cursor + count)); break;
+    }
+    this.size += chars.length - before;
+  }
+  // Text either side of one UART's cursor, so it can be drawn.
+  split(index) {
+    const source = this.sources.get(index);
+    const at = source?.row ? this.lines.lastIndexOf(source.row) : -1;
+    const join = rows => rows.map(row => row.chars.join('')).join('\n');
+    if (at < 0) {
+      const text = join(this.lines);
+      return [text ? `${text}\n` : '', ' ', ''];
+    }
+    const { chars } = this.lines[at], column = source.cursor, rest = this.lines.slice(at + 1);
+    return [(at ? `${join(this.lines.slice(0, at))}\n` : '') + chars.slice(0, column).join(''),
+      chars[column] ?? ' ', chars.slice(column + 1).join('') + (rest.length ? `\n${join(rest)}` : '')];
   }
   breakLine(index) {
     const source = this.sources.get(index);
@@ -2907,12 +2970,126 @@ async function initUartWindow() {
 
 function paintUartOutput() {
   clearTimeout(uartPaintTimer); uartPaintTimer = null;
-  uartOutput.textContent = uartLog.text(uartSelected === 'all');
+  if (uartInteractive) {
+    const [before, under, after] = uartLog.split(uartSelected);
+    uartCursor.textContent = under;
+    uartOutput.replaceChildren(before, uartCursor, after);
+  } else uartOutput.textContent = uartLog.text(uartSelected === 'all');
   if (document.getElementById('uartFollow').checked) uartOutput.scrollTop = uartOutput.scrollHeight;
-  setText(document.getElementById('uartHint'), uartLog.trimmed
-    ? 'Showing the most recent output; older text has been trimmed.'
-    : uartWindowMode ? 'Read only · closing this window disconnects the viewer.'
-    : 'Output starts when you connect. Closing this section disconnects the viewer.');
+  paintUartHint();
+}
+
+function paintUartHint() {
+  const name = `ttyUSB${uartSelected}`;
+  const mode = !uartInteractive ? (uartCanType() ? 'Read only · tick Interactive to type into this console.' : '')
+    : document.activeElement === uartInput
+      ? `Typing into ${name} · Shift+Tab leaves the console · Shift+PageUp/PageDown scrolls.`
+      : `Interactive · click the console to type into ${name}.`;
+  const trimmed = uartLog.trimmed ? 'Showing the most recent output; older text has been trimmed.' : '';
+  setText(document.getElementById('uartHint'), [mode, trimmed].filter(Boolean).join(' ')
+    || (uartWindowMode ? 'Read only · closing this window disconnects the viewer.'
+      : 'Output starts when you connect. Closing this section disconnects the viewer.'));
+}
+
+function uartCanType() {
+  return uartSelected !== 'all' && uartChoices.some(port => port.index === uartSelected && port.input);
+}
+
+// Only ever on request. Switching UART, disconnecting, or closing the section
+// all put the console back to read only.
+function setUartInteractive(on) {
+  const allowed = uartCanType();
+  uartInteractive = on && allowed && !!uartSession;
+  const box = document.getElementById('uartInteractive');
+  box.checked = uartInteractive;
+  box.disabled = !uartSession;
+  document.getElementById('uartInteractiveLabel').hidden = !allowed;
+  if (!uartInteractive) {
+    uartInputQueue = '';
+    uartInput.blur();
+  }
+  uartInput.hidden = !uartInteractive;
+  uartOutput.classList.toggle('interactive', uartInteractive);
+  paintUartOutput();
+}
+
+// What a terminal sends for keys that produce no text.
+const UART_KEYS = {
+  Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b',
+  ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
+  Home: '\x1b[H', End: '\x1b[F', Insert: '\x1b[2~', Delete: '\x1b[3~', PageUp: '\x1b[5~', PageDown: '\x1b[6~',
+};
+const UART_CTRL = { '@': '\x00', ' ': '\x00', '[': '\x1b', '\\': '\x1c', ']': '\x1d', '^': '\x1e', '_': '\x1f' };
+
+function uartHasSelection() {
+  const selection = getSelection();
+  return !selection.isCollapsed && uartOutput.contains(selection.anchorNode);
+}
+
+// Bytes for one keydown, or null to leave it to the browser: copy, paste,
+// Shift+Tab out of the console, and text an IME or soft keyboard composes.
+function uartKeyBytes(e) {
+  if (e.isComposing || e.keyCode === 229 || e.metaKey) return null;
+  if (e.ctrlKey && !e.altKey) {
+    const key = e.key.toLowerCase();
+    if (key.length === 1 && key >= 'a' && key <= 'z') {
+      // Ctrl+Shift+C/V copy and paste as in a terminal, and so does a plain
+      // Ctrl+C while console text is selected.
+      if (e.shiftKey || key === 'v' || (key === 'c' && uartHasSelection())) return null;
+      return String.fromCharCode(key.charCodeAt(0) - 96);
+    }
+    return UART_CTRL[e.key] ?? UART_KEYS[e.key] ?? null;
+  }
+  if (e.key === 'Tab' && e.shiftKey) return null;
+  return UART_KEYS[e.key] ?? ([...e.key].length === 1 ? e.key : null);
+}
+
+function uartInputProblem(message) {
+  if (performance.now() - uartInputNoticeAt < 2000) return;
+  uartInputNoticeAt = performance.now();
+  toast(message);
+}
+
+function sendUartInput(text) {
+  if (!uartInteractive || !text) return;
+  if (uartStates.get(uartSelected)?.status !== 'connected') {
+    uartInputProblem(`ttyUSB${uartSelected} is not connected; input dropped.`);
+    return;
+  }
+  if (uartInputQueue.length + text.length > UART_INPUT_QUEUE_MAX) {
+    uartInputProblem('Too much input queued; wait for the console to catch up.');
+    return;
+  }
+  uartLastInput = performance.now();
+  const follow = document.getElementById('uartFollow');
+  if (!follow.checked) { follow.checked = true; uartOutput.scrollTop = uartOutput.scrollHeight; }
+  uartInputQueue += text;
+  flushUartInput();
+}
+
+// One request in flight at a time, so input lands in the order it was typed.
+// Anything still queued when a request fails is dropped, never replayed late.
+async function flushUartInput() {
+  if (uartInputBusy) return;
+  uartInputBusy = true;
+  const index = uartSelected;
+  try {
+    while (uartInputQueue && uartInteractive && uartSelected === index) {
+      let chunk = uartInputQueue.slice(0, 1024);
+      if (chunk.length > 1 && /[\ud800-\udbff]$/.test(chunk)) chunk = chunk.slice(0, -1);
+      uartInputQueue = uartInputQueue.slice(chunk.length);
+      const result = await api('POST', '/api/uart/input', { uart: index, data: chunk }, { timeout: 4000 });
+      if (result.error) {
+        uartInputQueue = '';
+        uartInputProblem(result.uncertain ? `${result.error}; ttyUSB${index} may not have received that input.`
+          : result.error === 'forbidden' ? `Your access does not allow typing into ttyUSB${index}.` : result.error);
+        if (result.error === 'forbidden') await loadUarts();
+        break;
+      }
+    }
+  } finally {
+    uartInputBusy = false;
+  }
 }
 
 function paintUartConnection() {
@@ -2955,6 +3132,7 @@ async function loadUarts() {
   setText(document.getElementById('uartHelp'), uartChoices.length
     ? `${uartChoices.length} UARTs · select one or monitor all with labeled output.` : 'No UARTs configured.');
   paintUartConnection();
+  setUartInteractive(uartInteractive);
   return true;
 }
 
@@ -2971,6 +3149,7 @@ function stopUart(message = 'Disconnected') {
   setText(document.getElementById('uartConnection'), message);
   setText(document.getElementById('uartConnect'), 'Connect');
   paintUartConnection();
+  setUartInteractive(false);
 }
 
 function startUart(index, clear = true) {
@@ -2985,6 +3164,7 @@ function startUart(index, clear = true) {
   uartSession = session;
   setText(document.getElementById('uartConnect'), 'Disconnect');
   paintUartConnection();
+  setUartInteractive(false);
   readUart(session, index);
 }
 
@@ -3036,7 +3216,9 @@ async function readUart(session, index) {
             uartStates.set(data.uart, data); paintUartConnection();
           } else if (event === 'output' && typeof data.text === 'string') {
             uartLog.feed(data.uart, data.text);
-            if (uartPaintTimer === null) uartPaintTimer = setTimeout(paintUartOutput, 100);
+            // Echo of a keystroke should not wait out the batching meant for bulk output.
+            if (uartPaintTimer === null) uartPaintTimer = setTimeout(paintUartOutput,
+              uartInteractive && performance.now() - uartLastInput < 2000 ? 16 : 100);
           } else if (event === 'gap') {
             toast(data.message); throw new Error('Output gap; reconnecting');
           } else if (event === 'denied') { stopUart(data.message); return; }
@@ -3069,6 +3251,63 @@ document.getElementById('uartConnect').addEventListener('click', () => {
 });
 document.getElementById('uartFollow').addEventListener('change', event => {
   if (event.target.checked) uartOutput.scrollTop = uartOutput.scrollHeight;
+});
+document.getElementById('uartInteractive').addEventListener('change', event => {
+  setUartInteractive(event.target.checked);
+  if (uartInteractive) uartInput.focus({ preventScroll: true });
+});
+uartOutput.addEventListener('click', () => {
+  if (uartInteractive && getSelection().isCollapsed) uartInput.focus({ preventScroll: true });
+});
+// The output itself has focus after a text selection or Tab: typing still goes
+// to the UART, while navigation keys keep scrolling it.
+uartOutput.addEventListener('keydown', e => {
+  if (!uartInteractive || /^(Arrow|Page)|^(Tab|Home|End)$/.test(e.key)) return;
+  const bytes = uartKeyBytes(e);
+  if (bytes === null) return;
+  e.preventDefault();
+  sendUartInput(bytes);
+  uartInput.focus({ preventScroll: true });
+});
+uartInput.addEventListener('keydown', e => {
+  if (e.shiftKey && (e.key === 'PageUp' || e.key === 'PageDown')) {
+    e.preventDefault();
+    uartOutput.scrollBy(0, (e.key === 'PageUp' ? -0.9 : 0.9) * uartOutput.clientHeight);
+    return;
+  }
+  const bytes = uartKeyBytes(e);
+  if (bytes === null) return;
+  e.preventDefault();
+  sendUartInput(bytes);
+});
+// Soft keyboards and IMEs deliver their text through input events instead.
+uartInput.addEventListener('beforeinput', e => {
+  const bytes = { insertLineBreak: '\r', insertParagraph: '\r', deleteContentBackward: '\x7f' }[e.inputType];
+  if (bytes) { e.preventDefault(); sendUartInput(bytes); }
+});
+function takeUartText() {
+  const text = uartInput.value.replace(/\r\n?|\n/g, '\r');
+  uartInput.value = '';
+  sendUartInput(text);
+}
+uartInput.addEventListener('input', e => { if (!e.isComposing) takeUartText(); });
+uartInput.addEventListener('compositionend', takeUartText);
+uartInput.addEventListener('focus', () => { uartOutput.classList.add('typing'); paintUartHint(); });
+uartInput.addEventListener('blur', () => { uartOutput.classList.remove('typing'); paintUartHint(); });
+document.getElementById('uartConsole').addEventListener('paste', e => {
+  // Not from the toolbar: a paste with a button focused should not type.
+  if (!uartInteractive || !(e.target === uartInput || uartOutput.contains(e.target))) return;
+  e.preventDefault();
+  const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?|\n/g, '\r');
+  if (!text) return;
+  if (text.length > UART_INPUT_QUEUE_MAX) {
+    uartInputProblem(`That paste is too long for a serial console (over ${UART_INPUT_QUEUE_MAX / 1024} KB).`);
+    return;
+  }
+  const lines = text.replace(/\r$/, '').split('\r').length;
+  if (lines > 1 && !confirm(`Paste ${lines} lines into ttyUSB${uartSelected}? Each line runs as soon as it arrives.`)) return;
+  sendUartInput(text);
+  uartInput.focus({ preventScroll: true });
 });
 uartOutput.addEventListener('scroll', () => {
   if (uartOutput.scrollHeight - uartOutput.scrollTop - uartOutput.clientHeight > 16) document.getElementById('uartFollow').checked = false;

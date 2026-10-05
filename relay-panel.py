@@ -16,7 +16,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from uart_stream import UartHub
+from uart_stream import UartHub, UartNotConnected
 
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -35,6 +35,7 @@ UART_BASE_PORT = int(os.environ.get("RELAY_PANEL_UART_BASE_PORT", "3000"))
 UART_COUNT = int(os.environ.get("RELAY_PANEL_UART_COUNT", "24"))
 uart_hub = UartHub(UART_HOST, UART_BASE_PORT, UART_COUNT)
 UART_HEARTBEAT = 5.0
+UART_INPUT_MAX = 4096      # bytes per request; the browser splits longer pastes
 
 # Callers allowed to act without a token, i.e. with full control of the bench.
 # Defaults to loopback and private addressing, on the assumption that the panel
@@ -1197,14 +1198,16 @@ class RelayHandler(BaseHTTPRequestHandler):
         """Suppress default logging."""
         pass
 
-    def send_json(self, data, status=200):
+    def send_json(self, data, status=200, changes_bench=True):
         if isinstance(data, dict):
             data = dict(data, server_id=SERVER_ID)
         # Every mutating endpoint answers through here, so this is the one
         # place that reliably knows the bench changed. Nudging centrally beats
         # remembering to do it in each of ~30 handlers, where a new endpoint
         # would silently forget and leave the snapshot a second behind.
-        if self.command in ("POST", "PUT", "DELETE") and status < 400:
+        # UART input moves nothing the sampler reads; nudging for it would
+        # cost a full bus sweep, PWM dump included, for every keystroke.
+        if changes_bench and self.command in ("POST", "PUT", "DELETE") and status < 400:
             # Counted before the sampler is woken, so the sweep it triggers
             # captures a sequence that already includes this write. Nudging
             # first would have the resample claim to cover less than it does,
@@ -1320,6 +1323,56 @@ class RelayHandler(BaseHTTPRequestHandler):
         return {index for index in allowed.get("uarts", [])
                 if type(index) is int and 0 <= index < UART_COUNT}
 
+    def allowed_uart_input(self):
+        """UARTs the caller may type into: a separate grant on top of viewing,
+        so a token that only lists `uarts` stays read only."""
+        ok, allowed = self._token_scope()
+        if not ok:
+            return set()
+        if allowed is None:
+            return set(range(UART_COUNT))
+        return {index for index in allowed.get("uart_input", [])
+                if type(index) is int and 0 <= index < UART_COUNT} & self.allowed_uarts()
+
+    def uart_input(self, body):
+        # Keystrokes reach a root shell on a bench device, so a cross-site
+        # page must not be able to send them. A JSON content type forces a
+        # CORS preflight this server never answers, and a foreign Origin is
+        # refused outright. Neither stops DNS rebinding.
+        if self.headers.get_content_type() != "application/json":
+            self.send_json({"error": "Content-Type must be application/json"}, 415)
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and urlparse(origin).netloc.lower() != self.headers.get("Host", "").lower():
+            self.forbidden()
+            return
+        if not isinstance(body, dict):
+            self.send_json({"error": "Expected a JSON object"}, 400)
+            return
+        index, data = body.get("uart"), body.get("data")
+        if type(index) is not int or not 0 <= index < UART_COUNT:
+            self.send_json({"error": "Invalid UART"}, 400)
+            return
+        if not isinstance(data, str) or not data:
+            self.send_json({"error": "data must be a non-empty string"}, 400)
+            return
+        if index not in self.allowed_uart_input():
+            self.forbidden()
+            return
+        raw = data.encode("utf-8", "replace")
+        if len(raw) > UART_INPUT_MAX:
+            self.send_json({"error": f"At most {UART_INPUT_MAX} bytes per request"}, 413)
+            return
+        try:
+            uart_hub.write(index, raw)
+        except UartNotConnected:
+            self.send_json({"error": f"ttyUSB{index} is not connected; open its console first"}, 409)
+            return
+        except OSError as error:
+            self.send_json({"error": f"ttyUSB{index} input failed: {error}"}, 503)
+            return
+        self.send_json({"ok": True, "uart": index, "bytes": len(raw)}, changes_bench=False)
+
     def stream_uart(self, selection):
         allowed = self.allowed_uarts()
         if not allowed:
@@ -1353,6 +1406,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         try:
             self.connection.settimeout(10)
+            # Echo of typed input arrives as many tiny events; Nagle would
+            # hold each one back waiting on the ACK for the last.
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -1393,9 +1449,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not allowed and UART_COUNT:
                 self.forbidden()
                 return
+            writable = self.allowed_uart_input()
             self.send_json({"uarts": [{"index": index, "name": f"ttyUSB{index}",
-                                      "port": UART_BASE_PORT + index}
-                                     for index in sorted(allowed)], "read_only": True})
+                                      "port": UART_BASE_PORT + index, "input": index in writable}
+                                     for index in sorted(allowed)], "read_only": not writable})
             return
 
         if path == "/api/uart/stream":
@@ -1466,6 +1523,10 @@ class RelayHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         body = self.read_body()
+
+        if path == "/api/uart/input":
+            self.uart_input(body)
+            return
 
         if path == "/api/relay/toggle":
             board_idx = body.get("board", 0)
