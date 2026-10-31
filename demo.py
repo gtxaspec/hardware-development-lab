@@ -403,9 +403,10 @@ def main():
         seed(port)
 
         if not args.screenshot:
-            print(f"demo panel on http://127.0.0.1:{port}   (ctrl-c to stop)")
-            print(f"sandbox: {tmp}")
+            print(f"demo panel on http://127.0.0.1:{port}   (ctrl-c to stop)", flush=True)
+            print(f"sandbox: {tmp}", flush=True)
             signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
             proc.wait()
             return 0
 

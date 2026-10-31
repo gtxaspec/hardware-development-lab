@@ -95,7 +95,7 @@ configured UARTs, for a token granted input on `ttyUSB0` only:
 ```
 
 Defaults are 24 UARTs at `127.0.0.1:3000` through `:3023`, matching
-`uart-monitor`. Operators can set `RELAY_PANEL_UART_HOST`,
+ser2net (`pi/ser2net.yaml`). Operators can set `RELAY_PANEL_UART_HOST`,
 `RELAY_PANEL_UART_BASE_PORT`, and `RELAY_PANEL_UART_COUNT` (0–64) on the server.
 Callers cannot supply arbitrary hostnames or TCP ports.
 
@@ -697,7 +697,8 @@ or removed.
 
 ## Errors
 
-All errors return HTTP 400 with:
+Errors return a 4xx or 5xx status (400 for a bad request, 403 without
+access, 404 for an unknown path, 409/413/503 where noted above) with:
 ```json
 {"error": "description of the problem"}
 ```

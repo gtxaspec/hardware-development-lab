@@ -62,8 +62,12 @@ def cmd_list(bench):
 
 
 def cmd_check(bench):
-    with urllib.request.urlopen(bench["panel_url"].rstrip("/") + "/api/state", timeout=5) as r:
-        state = json.load(r)
+    url = bench["panel_url"].rstrip("/") + "/api/state"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            state = json.load(r)
+    except (OSError, ValueError) as e:
+        sys.exit(f"cannot read {url}: {e}")
     boards = state["boards"]
     master = bench["master_name_contains"].lower()
     used, bad = {}, 0

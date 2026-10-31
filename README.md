@@ -132,6 +132,36 @@ Not required, but this rig is noticeably better with them:
   cannot reproduce an IR-illuminated night scene.
 - **A fuse on the 12 V rail**, sized under the strip's total draw.
 
+## Setting up a bench from scratch
+
+Two machines are involved. Everything on the Pi is controlled from the dev
+machine, where Claude Code runs.
+
+| Runs on | What | Needs |
+|---|---|---|
+| Pi (any SBC with I²C) | `relay-panel.py`, ser2net, `ch348-order`, `dfu-remote` | Python 3.7+, `i2c-tools`, I²C enabled in the device tree, `wiringOP` (GPIOs only), `ser2net` 4.x, `usbutils`, `udev`; `tcpdump` + the `usbmon` module for `/capture` |
+| Dev machine | the three MCP servers, the skills, `tools/`, the `thingino-dfu` client | Python 3.11+, [Bun](https://bun.sh), key-based root ssh to the Pi, [thingino-dfu](https://github.com/gtxaspec/thingino-dfu) installed (its build toolchain too, for `/deploy-dfu`) |
+
+In order:
+
+1. **Panel on the Pi**: [First-time install](#first-time-install). Open the UI,
+   add the relay boards, GPIOs and PWM chips, and name every relay after the
+   device it drives (rails get "master" in the name).
+2. **Serial consoles on the Pi**: [Serial consoles](#serial-consoles-ser2net).
+3. **Flashing daemon on the Pi**: build and install `dfu-remote` from
+   thingino-dfu (`/deploy-dfu` does it once the rest is up), and run it as a
+   service listening on 5050.
+4. **Dev machine**: the MCP venv and Bun packages, then register all three
+   servers in `~/.mcp.json` ([MCP server](#mcp-server),
+   [UART and USB MCP servers](#uart-and-usb-mcp-servers)).
+5. **Bench map**: `bench.toml` and `tools/bench.py check`
+   ([Skills and the bench map](#skills-and-the-bench-map)).
+6. **Consoles**: power each board with `tools/uart-listen-all.py` running, then
+   put the port it spoke on into that device's `uart` in `bench.toml`.
+7. **Skills**: link them in and try `/poweroff all`, then `/bootstrap <device>`.
+
+Before exposing the panel beyond your own network, read [Access](#access).
+
 ## Layout
 
 ```
@@ -288,8 +318,8 @@ PCF8574 has no register file at all and will not work without changes.
 **I²C bus number and addresses** are whatever your wiring and jumpers are; find
 them with `i2cdetect -l` and `i2cdetect -y -r <bus>`.
 
-**Python** 3.6+ for the server, which is pure standard library. `mcp-server.py`
-needs 3.10+ for its type annotations.
+**Python** 3.7+ for the server, which is pure standard library. The MCP
+servers need 3.10+, `tools/bench.py` 3.11+ (`tomllib`).
 
 **Permissions.** I²C and GPIO access needs root or membership of the `i2c` and
 `gpio` groups. The systemd unit sets no `User=`, so it runs as root.
@@ -312,12 +342,14 @@ All optional; the defaults suit a normal install.
 | `RELAY_PANEL_UART_HOST` | `127.0.0.1` | server: raw TCP UART provider, usually ser2net on the same Pi |
 | `RELAY_PANEL_UART_BASE_PORT` | `3000` | server: TCP port for `ttyUSB0`; each subsequent UART adds one |
 | `RELAY_PANEL_UART_COUNT` | `24` | server: UART count, 0–64; `0` disables UART access |
+| `RELAY_PANEL_TRUSTED` | loopback + private ranges | server: networks with full access and no token; see [Access](#access) |
 | `RELAY_PANEL_URL` | `http://localhost:8080` | MCP server: where the panel is |
 | `UART_HOST` | `localhost` | uart MCP: the ser2net host |
 | `UART_BASE_PORT` | `3000` | uart MCP: TCP port for `ttyUSB0` |
 | `UART_COUNT` | `24` | uart MCP: number of UART ports |
 | `UART_ALIASES` | `mcp/uart/aliases.json` | uart MCP: optional port names |
 | `USB_HOTPLUG_HOST` | `root@localhost` | usb-hotplug MCP: ssh target that runs `udevadm`/`lsusb` |
+| `BENCH_TOML` | `bench.toml` at the repo root | `tools/bench.py` and the skills: the bench map |
 | `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target, usually set in `.env` |
 | `RELAY_PANEL_FLASH_PORT` | `5050` | `deploy.py`: flashing daemon's port; `0` disables |
 | `RELAY_PANEL_DFU_PID` | `4d44` | `deploy.py`: USB pid meaning "in DFU"; empty disables |
@@ -325,11 +357,31 @@ All optional; the defaults suit a normal install.
 `config.json`, optional `tokens.json`, and `.env` hold site-specific settings and are
 gitignored — nothing in version control names a particular machine.
 
+## Access
+
+The panel has no login. Any client whose address falls in
+`RELAY_PANEL_TRUSTED` gets full control: every relay, GPIO, LED and console,
+plus the structural actions. The default is loopback plus all private
+ranges (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), which assumes the
+panel is only reachable from a network you own.
+
+Everyone else needs a bearer token from `tokens.json` in the install dir,
+which maps the token's SHA-256 to what it may touch (`relays`, `pwm`,
+`uarts`, `uart_input`, ...). See [API.md](API.md#uart-consoles) for the format.
+To give an outside collaborator access over a VPN, narrow
+`RELAY_PANEL_TRUSTED` to your own ranges first (a systemd drop-in with
+`Environment=RELAY_PANEL_TRUSTED=...`), otherwise their VPN addresses may
+already count as trusted.
+
+Two things bypass the panel entirely: ser2net's TCP ports have no
+authentication, and the usb-hotplug server uses root ssh. Firewall the Pi's
+3000-30xx ports to the machines that should reach the consoles.
+
 ## UART consoles
 
 Open **UART consoles** below the hardware controls and select a `ttyUSB` button
 to stream its output. **All UARTs** combines the consoles with a `[ttyUSB#]`
-prefix on each line. The default mapping matches `uart-monitor`: ports
+prefix on each line. The default mapping matches `pi/ser2net.yaml`: ports
 3000–3023 for `ttyUSB0`–`ttyUSB23`. The browser connects through the panel;
 ser2net continues to manage baud rates and serial devices.
 
@@ -357,7 +409,7 @@ reach the device.
 
 Input shares the upstream connection, and ser2net passes bytes from any of its
 clients to the tty, so typing here mixes with anything else connected to that
-port, `uart-monitor` included. U-Boot does not read the UART while a command
+port, the uart MCP server included. U-Boot does not read the UART while a command
 runs, so a multi-line paste into it can lose characters after the first line.
 
 **Follow output** scrolls as data arrives; scrolling back turns it off.
@@ -372,7 +424,7 @@ left and right, erase to end of line, insert and delete characters), and strips
 other terminal escape sequences. It is a log viewer, not a full-screen terminal
 emulator: `vi`, `top` and menu-driven tools will not draw correctly.
 
-UART access follows the panel's existing trusted-network/token rules. Scoped
+UART access follows the [Access](#access) rules. Scoped
 tokens need an explicit `"uarts": [0, 1, ...]` list in their `allowed` map;
 existing relay-only tokens do not gain console access. Typing is a separate
 grant, `"uart_input": [0, 1, ...]`, honored only for UARTs also in `uarts`; a
@@ -525,9 +577,9 @@ ssh root@your-pi python3 - < test-hardware.py    # 63 checks, drives the real ch
 
 The browser suite uses simulated hardware only. It checks pending controls,
 delayed replies, stale and failed readings, restart recovery, polling overlap,
-slider recovery, and editing/focus preservation. Install Playwright separately
-or set `RELAY_PANEL_PLAYWRIGHT` to its module path; the suite reports a skip when
-it is unavailable.
+slider recovery, and editing/focus preservation. Both browser suites need
+Playwright (`npm i --no-save playwright && npx playwright install chromium`),
+or `RELAY_PANEL_PLAYWRIGHT` set to its module path; they report a skip without it.
 
 The UART suites check shared upstream connections, the read-only default, UTF-8
 fragments, authorization/revocation, reconnects, port switching, bounded buffers,
@@ -572,7 +624,8 @@ exposed as tools. That is physical setup, done in the web UI.
 
 ### UART and USB MCP servers
 
-Two more servers live under `mcp/`. Both run on the dev machine.
+Two more servers live under `mcp/`. Both run on the dev machine and go in the
+same `~/.mcp.json` as the panel's server; use absolute paths throughout.
 
 **`mcp/uart/uart_server.py`** reads and writes the consoles directly over
 ser2net (one persistent connection per port, background logging to
@@ -584,7 +637,11 @@ every call and settable with the `name_uart` tool. Match `UART_HOST`,
 
 **`mcp/usb-hotplug/server.ts`** runs `udevadm monitor` on the Pi over ssh and
 pushes each USB add/remove as a channel notification, with `usb_wait` to block
-until a device (say the Ingenic bootrom, `a108:c309`) appears. It needs
+until a device (say the Ingenic bootrom, `a108:c309`) appears. The push
+notifications are a Claude Code channel, which a non-plugin server only gets
+when Claude Code starts with
+`--dangerously-load-development-channels server:usb-hotplug`; without it the
+tools (`usb_wait`, `usb_events`, `usb_devices`) still work. It needs
 [Bun](https://bun.sh) and key-based ssh to `USB_HOTPLUG_HOST`:
 
 ```bash
@@ -613,8 +670,11 @@ each looks the device up in `bench.toml` through `tools/bench.py` (Python
 ```bash
 cp bench.example.toml bench.toml      # then describe your devices
 tools/bench.py check                  # compare it with the live panel
-ln -s "$PWD"/skills/* ~/.claude/skills/
+mkdir -p ~/.claude/skills && ln -s "$PWD"/skills/* ~/.claude/skills/
 ```
+
+Link them, do not copy: each skill finds `tools/bench.py` (and `/bootstrap`
+reuses `/flash`'s steps) through its real location in this repo.
 
 | Skill | Does |
 |---|---|

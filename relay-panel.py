@@ -28,7 +28,7 @@ LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
 # identifier to discard late replies and reset their counters after a restart.
 SERVER_ID = uuid.uuid4().hex
 
-# Same raw TCP consoles as uart-monitor: ttyUSB0..23 at ports 3000..3023.
+# Raw TCP consoles from ser2net (pi/ser2net.yaml): ttyUSB0..23 at ports 3000..3023.
 # These addresses are operator configuration, never supplied by an API caller.
 UART_HOST = os.environ.get("RELAY_PANEL_UART_HOST", "127.0.0.1")
 UART_BASE_PORT = int(os.environ.get("RELAY_PANEL_UART_BASE_PORT", "3000"))
