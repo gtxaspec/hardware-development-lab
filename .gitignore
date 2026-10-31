@@ -16,3 +16,7 @@ tokens.json*
 *~
 .idea/
 .vscode/
+
+# MCP servers: local names and installed packages
+mcp/uart/aliases.json
+node_modules/

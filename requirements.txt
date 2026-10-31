@@ -1,4 +1,4 @@
-# Dependencies for mcp-server.py only.
+# Dependencies for the Python MCP servers (mcp-server.py, mcp/uart) only.
 #
 # relay-panel.py deliberately has none - it is pure standard library, so the
 # Orange Pi runs it with the system python and needs no venv, no pip and no

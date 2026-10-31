@@ -1,0 +1,5 @@
+{
+  "_note": "Optional names; copy to aliases.json. Keys starting with _ are ignored. A name maps to a port index, \"ttyUSBN\", or {\"host\", \"port\"} for a console that is not on UART_HOST.",
+  "camera1": "ttyUSB0",
+  "qemu": {"host": "127.0.0.1", "port": 3331, "uart": "QEMU -serial tcp::3331,server"}
+}
