@@ -31,11 +31,18 @@ while time.time() < end and sel.get_map():
             sel.unregister(key.fileobj)
             continue
         data[key.data] += d
+missing = []
 for port, d in data.items():
     if not d:
+        continue
+    # ser2net answers a port whose /dev/ttyUSBN is absent with this, then hangs up
+    if d.startswith(b"Device open failure"):
+        missing.append(port)
         continue
     open(os.path.join(out, f"{port}.log"), "wb").write(d)
     t = re.sub(rb"\x1b\[[0-9;]*[a-zA-Z]", b"", d).decode(errors="replace")
     ids = re.findall(r"^(?:CPU|Model):.*$", t.replace("\r", ""), re.M)
     print(f"{port}: {len(d)} bytes  " + " | ".join(i.strip() for i in ids[:2]))
+if missing:
+    print(f"no device behind: {', '.join(map(str, missing))}")
 print(f"logs in {out}")

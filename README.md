@@ -139,7 +139,7 @@ machine, where Claude Code runs.
 
 | Runs on | What | Needs |
 |---|---|---|
-| Pi (any SBC with I²C) | `relay-panel.py`, ser2net, `ch348-order`, `dfu-remote` | Python 3.7+, `i2c-tools`, I²C enabled in the device tree, `wiringOP` (GPIOs only), `ser2net` 4.x, `usbutils`, `udev`; `tcpdump` + the `usbmon` module for `/capture` |
+| Pi (any SBC with I²C) | `relay-panel.py`, ser2net, `ch348-order`, `dfu-remote` | Python 3.7+, `curl` (for `deploy.py`), `i2c-tools`, I²C enabled in the device tree, `wiringOP` (GPIOs only), `ser2net` 4.x, `usbutils`, `udev`; `tcpdump` + the `usbmon` module for `/capture` |
 | Dev machine | the three MCP servers, the skills, `tools/`, the `thingino-dfu` client | Python 3.11+, [Bun](https://bun.sh), key-based root ssh to the Pi, [thingino-dfu](https://github.com/gtxaspec/thingino-dfu) installed (its build toolchain too, for `/deploy-dfu`) |
 
 In order:
