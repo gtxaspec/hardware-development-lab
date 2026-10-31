@@ -1,11 +1,13 @@
-# Relay Control Panel
+# Hardware Development Lab
 
-Web panel, HTTP API and MCP server for the camera test bench: I²C relay boards,
-direct GPIO pins, dimmable LED strips, live UART consoles, and a view of which
-devices are sitting in a flashable USB state.
+The software for a camera bring-up bench. At its centre is a relay panel: a web
+UI and HTTP API for I²C relay boards, direct GPIO pins, dimmable LED strips, live
+UART consoles, and a view of which devices are sitting in a flashable USB state.
+Around it are Claude Code MCP servers and skills that drive whole flash and boot
+cycles, and the Pi-side serial setup.
 
-It runs on a single-board computer wired into the bench — an Orange Pi here, but
-anything with I²C and a `gpio` CLI will do — and serves on port 8080.
+The panel runs on a single-board computer wired into the bench — an Orange Pi
+here, but anything with I²C and a `gpio` CLI will do — and serves on port 8080.
 
 ![The panel: two relay boards in PCB view, GPIO pins, LED strips with a group
 master, and connected USB devices](docs/screenshot.png)
