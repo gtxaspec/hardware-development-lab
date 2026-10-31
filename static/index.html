@@ -947,6 +947,82 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-window #uartConsole:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .uart-window .uart-toolbar, .uart-window .uart-hint { flex: none; }
 .uart-window .uart-output { flex: 1; height: auto; min-height: 0; max-height: none; }
+
+/* --- Phone layout: console docked to the bottom, compact relay rows --- */
+.uart-dock-handle, .uart-port-select, .uart-dock-btn, .uart-dock-status { display: none; }
+.section-collapse { background: none; border: 0; padding: 0.25rem; margin: 0 -0.25rem 0 -0.5rem; color: var(--text-dim);
+  font-size: 0.75rem; line-height: 1; cursor: pointer; transition: transform var(--transition); }
+.section-collapse:hover { color: var(--text); }
+.board-section.collapsed .section-collapse { transform: rotate(-90deg); }
+.board-section.collapsed > :not(.board-header) { display: none; }
+.board-section.collapsed > .board-header { margin-bottom: 0; }
+.board-section.collapsed > .board-header > :not(.section-collapse, .board-name, .collapsed-summary) { display: none; }
+.collapsed-summary { color: var(--text-dim); font-size: 0.75rem; }
+.board-section:not(.collapsed) .collapsed-summary { display: none; }
+body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
+#hideUnnamedBtn.active { border-color: var(--accent); color: var(--accent-hover); }
+
+@media (max-width: 600px) {
+  .header { flex-wrap: wrap; gap: 0.5rem; }
+  .header-actions { flex-wrap: wrap; justify-content: flex-end; }
+  body:not(.edit-mode) .header-actions .setup-btn { display: none; }
+  html:not(.uart-window) body { padding-bottom: var(--dock-space, 0px); }
+  html:not(.uart-window) .uart-container { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    max-width: none; margin: 0; padding: 0; }
+  html:not(.uart-window) .uart-section { display: flex; flex-direction: column; border-bottom: 0;
+    border-radius: 12px 12px 0 0; box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.5);
+    padding-bottom: env(safe-area-inset-bottom); }
+  html:not(.uart-window) .uart-section[open] { height: var(--dock-h, 42dvh); }
+  html:not(.uart-window) .uart-section[open].dock-full { height: calc(100dvh - 2.5rem); }
+  html:not(.uart-window) .uart-section[open].dock-min { height: auto; }
+  html:not(.uart-window) .uart-section.dock-min > .uart-body { display: none; }
+  html:not(.uart-window) .uart-section > summary { flex: none; display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.6rem 0.75rem; font-size: 0.95rem; }
+  html:not(.uart-window) .uart-subtitle { display: none; }
+  html:not(.uart-window) .uart-dock-status { display: inline; margin-left: auto; color: var(--text-dim);
+    font-size: 0.75rem; font-weight: 400; font-family: 'SF Mono', 'Fira Code', monospace; }
+  html:not(.uart-window) .uart-container:has(> .uart-section[open]) .uart-dock-handle { display: block; }
+  .uart-dock-handle { position: absolute; top: -12px; left: 0; right: 0; height: 24px; z-index: 1;
+    cursor: ns-resize; touch-action: none; }
+  .uart-dock-handle::after { content: ''; position: absolute; left: 50%; top: 8px; width: 44px; height: 5px;
+    margin-left: -22px; border-radius: 3px; background: var(--text-muted); }
+  html:not(.uart-window) .uart-body { display: flex; flex-direction: column; flex: 1; min-height: 0;
+    padding: 0 0.75rem 0.5rem; }
+  html:not(.uart-window) #uartPorts, html:not(.uart-window) .uart-hint { display: none; }
+  html:not(.uart-window) .uart-port-select { display: block; flex: none; width: 100%; margin: 0 0 0.5rem;
+    padding: 0.45rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+    color: var(--text); font: 16px 'SF Mono', 'Fira Code', monospace; }
+  html:not(.uart-window) #uartConsole:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  html:not(.uart-window) #uartConsole:not([hidden]) ~ .uart-help,
+  html:not(.uart-window) .uart-body:has(#uartConsole:not([hidden])) > .uart-help { display: none; }
+  html:not(.uart-window) .uart-toolbar { flex: none; flex-wrap: nowrap; gap: 0.5rem; overflow-x: auto; margin-bottom: 0.4rem; }
+  html:not(.uart-window) .uart-toolbar h3 { display: none; }
+  html:not(.uart-window) .uart-controls { flex-wrap: nowrap; width: auto; margin-left: auto; }
+  html:not(.uart-window) .uart-section[open] .uart-dock-btn { display: inline-block; flex: none; padding: 0.25rem 0.6rem; }
+  html:not(.uart-window) .uart-dock-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  /* Chrome and Safari wrap a <details> body in ::details-content, which must pass the flex height on. */
+  html:not(.uart-window) .uart-section[open]::details-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  html:not(.uart-window) .uart-output { flex: 1; height: auto; max-height: none; min-height: 3rem; }
+
+  /* One line per relay: indicator, name, number. */
+  html:not(.uart-window) .relay-card[data-board] { flex-direction: row; align-items: center; gap: 0.5rem;
+    min-height: 44px; padding: 0.5rem 0.625rem; }
+  html:not(.uart-window) .relay-card[data-board] .relay-top { display: contents; }
+  html:not(.uart-window) .relay-card[data-board] .relay-indicator { order: 0; }
+  html:not(.uart-window) .relay-card[data-board] .relay-name { order: 1; flex: 1; min-width: 0; font-size: 0.8125rem; }
+  html:not(.uart-window) .relay-card[data-board] .relay-status-slot { order: 2; flex: none; align-self: auto; margin: 0; }
+  html:not(.uart-window) .board-outline .relay-card[data-board] .relay-state { position: static; transform: none; }
+  html:not(.uart-window) .relay-card[data-board] > .relay-state { order: 2; }
+  html:not(.uart-window) .relay-card[data-board] .relay-num { order: 3; }
+  html:not(.uart-window) .relay-card[data-board] .relay-edit-btn { order: 4; margin: 0; }
+  .board-outline { padding: 0.75rem; }
+  /* The column layout turns the desktop's 400px flex-basis into a minimum height. */
+  .boards-container > .board-section { flex: none; }
+  html:not(.uart-window) #uartConnection, html:not(.uart-window) #uartPopout { display: none; }
+  html:not(.uart-window) .uart-controls .btn-sm, html:not(.uart-window) .uart-check { white-space: nowrap; flex: none; }
+  .relay-board-view { display: block; }
+  .board-outline.board-16 { width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -955,9 +1031,10 @@ body.edit-mode .board-name { cursor: pointer; }
   <h1>Relay Control Panel <span class="poll-dot" id="pollDot" title="Polling indicator"></span></h1>
   <div class="header-actions">
     <button class="btn-edit-mode btn-sm" id="editModeBtn" onclick="toggleEditMode()" title="Toggle edit mode">Edit</button>
-    <button class="btn-surface btn-sm" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
-    <button class="btn-surface btn-sm" onclick="addGpioModal()" title="Add GPIO pin">+ GPIO</button>
-    <button class="btn-surface btn-sm" onclick="addPwmModal()" title="Add PCA9685 PWM chip">+ PWM</button>
+    <button class="btn-surface btn-sm" id="hideUnnamedBtn" type="button" title="Hide relays still named Relay N (shown again in edit mode)">Hide unnamed</button>
+    <button class="btn-surface btn-sm setup-btn" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
+    <button class="btn-surface btn-sm setup-btn" onclick="addGpioModal()" title="Add GPIO pin">+ GPIO</button>
+    <button class="btn-surface btn-sm setup-btn" onclick="addPwmModal()" title="Add PCA9685 PWM chip">+ PWM</button>
   </div>
 </div>
 
@@ -975,11 +1052,18 @@ body.edit-mode .board-name { cursor: pointer; }
 <div class="boards-container" id="boards"></div>
 
 <div class="uart-container">
+  <div class="uart-dock-handle" id="uartDockHandle" aria-hidden="true" title="Drag to resize the console"></div>
   <details class="uart-section" id="uartSection">
-    <summary>UART consoles <span class="uart-subtitle">Live serial output · read only by default</span></summary>
+    <summary>UART consoles <span class="uart-subtitle">Live serial output · read only by default</span>
+      <span class="uart-dock-status" id="uartDockStatus"></span>
+      <button class="btn-surface btn-sm uart-dock-btn" id="uartDockMin" type="button"
+              title="Shrink the console to its title bar; it keeps streaming" aria-label="Minimize console">▾</button>
+      <button class="btn-surface btn-sm uart-dock-btn" id="uartDockFull" type="button"
+              title="Console full screen" aria-label="Maximize console" aria-pressed="false">⤢</button></summary>
     <div class="uart-body">
       <p id="uartHelp" class="uart-help" role="status">Select a UART to start streaming.</p>
       <div id="uartPorts" class="uart-ports" aria-label="UART selection"></div>
+      <select id="uartPortSelect" class="uart-port-select" aria-label="UART to show"></select>
       <div id="uartConsole" hidden>
         <div class="uart-toolbar">
           <h3 id="uartName">Console</h3>
@@ -2050,7 +2134,8 @@ function renderStructure() {
       const onClass = relay.state === 'on' ? 'is-on' : '';
       const stateText = relay.state === 'on' ? 'ON' : 'OFF';
       const focused = (bi === focusedBoard && ri === focusedRelay);
-      return `<div class="relay-card ${onClass}"
+      const unnamedClass = /^Relay \d+$/.test(relay.name) ? 'is-unnamed' : '';
+      return `<div class="relay-card ${onClass} ${unnamedClass}"
                    tabindex="${focused ? '0' : '-1'}"
                    data-board="${bi}" data-relay="${relay.num}" data-ri="${ri}"
                    role="button"
@@ -2097,6 +2182,7 @@ function renderStructure() {
   }).join('');
 
   boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection() + renderUsbSection();
+  decorateSections();
 
 }
 
@@ -2209,6 +2295,73 @@ function paintLiveState() {
   }
 }
 
+// Per-viewer layout preferences; storage can be missing or throw (private mode).
+function loadPref(key, fallback) {
+  try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+}
+function savePref(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* not persisted */ }
+}
+const collapsedSections = new Set(loadPref('relay_panel_collapsed', []));
+
+function sectionKey(section) {
+  if (section.matches('[data-board-idx]')) return `board:${section.dataset.boardIdx}`;
+  if (section.matches('[data-pwm-idx]')) return `pwm:${section.dataset.pwmIdx}`;
+  if (section.matches('.gpios-section')) return 'gpios';
+  if (section.matches('.usb-section')) return 'usb';
+  return null;
+}
+
+function collapsedSummary(section) {
+  const on = section.querySelectorAll('.relay-card.is-on, .gpio-card.is-on').length;
+  const total = section.querySelectorAll('.relay-card, .gpio-card').length;
+  return total ? `${on} on` : '';
+}
+
+function decorateSections() {
+  for (const section of boardsEl.querySelectorAll('.board-section')) {
+    const key = sectionKey(section);
+    const header = section.querySelector(':scope > .board-header');
+    if (!key || !header) continue;
+    if (!header.querySelector('.section-collapse')) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'section-collapse'; button.dataset.collapse = key;
+      button.textContent = '▼';
+      header.prepend(button);
+      const summary = document.createElement('span');
+      summary.className = 'collapsed-summary';
+      const title = header.querySelector('.board-name');
+      if (title) title.after(summary); else header.append(summary);
+    }
+    const collapsed = collapsedSections.has(key);
+    section.classList.toggle('collapsed', collapsed);
+    const button = header.querySelector('.section-collapse');
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('aria-label', collapsed ? 'Expand section' : 'Collapse section');
+    setText(header.querySelector('.collapsed-summary'), collapsed ? collapsedSummary(section) : '');
+  }
+}
+
+function toggleSectionCollapse(key) {
+  if (collapsedSections.has(key)) collapsedSections.delete(key); else collapsedSections.add(key);
+  savePref('relay_panel_collapsed', [...collapsedSections]);
+  decorateSections();
+}
+
+function setHideUnnamed(on) {
+  document.body.classList.toggle('hide-unnamed', on);
+  const button = document.getElementById('hideUnnamedBtn');
+  button.classList.toggle('active', on);
+  button.setAttribute('aria-pressed', String(on));
+  button.textContent = on ? 'Show unnamed' : 'Hide unnamed';
+}
+setHideUnnamed(loadPref('relay_panel_hide_unnamed', false));
+document.getElementById('hideUnnamedBtn').addEventListener('click', () => {
+  const on = !document.body.classList.contains('hide-unnamed');
+  savePref('relay_panel_hide_unnamed', on);
+  setHideUnnamed(on);
+});
+
 function render() {
   const signature = structureSignature();
   const active = document.activeElement;
@@ -2228,10 +2381,11 @@ function render() {
     if (focusSelector) boardsEl.querySelector(focusSelector)?.focus();
   }
   paintLiveState();
+  if (collapsedSections.size) decorateSections();
   const usb = JSON.stringify([state.usb_vid, state.usb]);
   if (usb !== renderedUsb) {
     const section = boardsEl.querySelector('.usb-section');
-    if (section) section.outerHTML = renderUsbSection();
+    if (section) { section.outerHTML = renderUsbSection(); decorateSections(); }
     renderedUsb = usb;
   }
   updatePollStatus();
@@ -2239,6 +2393,8 @@ function render() {
 
 // --- Events ---
 boardsEl.addEventListener('click', (e) => {
+  const collapse = e.target.closest('[data-collapse]');
+  if (collapse) { toggleSectionCollapse(collapse.dataset.collapse); return; }
   // Ignore clicks on inputs (active inline editing)
   if (e.target.tagName === 'INPUT') return;
 
@@ -3099,6 +3255,10 @@ function paintUartConnection() {
   const message = connected ? (selected.length === 1 ? 'Connected' : `${connected} / ${selected.length} connected`)
     : connecting ? 'Connecting…' : 'Unavailable · retrying';
   if (uartSession) setText(document.getElementById('uartConnection'), message);
+  const select = document.getElementById('uartPortSelect');
+  if (uartSelected !== null && select.value !== String(uartSelected)) select.value = String(uartSelected);
+  setText(document.getElementById('uartDockStatus'), uartSelected === null ? ''
+    : `${uartSelected === 'all' ? 'all' : `ttyUSB${uartSelected}`} · ${uartSession ? message : 'disconnected'}`);
   for (const button of document.querySelectorAll('[data-uart]')) {
     const index = button.dataset.uart === 'all' ? 'all' : Number(button.dataset.uart);
     button.setAttribute('aria-pressed', String(index === uartSelected));
@@ -3129,6 +3289,11 @@ async function loadUarts() {
     button.addEventListener('click', () => startUart(port.index));
     ports.appendChild(button);
   }
+  const select = document.getElementById('uartPortSelect');
+  select.replaceChildren(new Option('Choose a UART…', ''));
+  if (uartChoices.length) select.append(new Option('All UARTs', 'all'));
+  for (const port of uartChoices) select.append(new Option(port.name, String(port.index)));
+  select.value = uartSelected === null ? '' : String(uartSelected);
   setText(document.getElementById('uartHelp'), uartChoices.length
     ? `${uartChoices.length} UARTs · select one or monitor all with labeled output.` : 'No UARTs configured.');
   paintUartConnection();
@@ -3243,6 +3408,66 @@ uartSection.addEventListener('toggle', () => {
   if (uartSection.open) loadUarts();
   else { uartListRequest++; stopUart(); }
 });
+document.getElementById('uartPortSelect').addEventListener('change', event => {
+  const value = event.target.value;
+  if (value) startUart(value === 'all' ? 'all' : Number(value));
+});
+
+// Phone dock: the console sits over the bottom of the page, which is padded by
+// the dock's height so every control can still be scrolled clear of it.
+const uartDock = document.querySelector('.uart-container');
+const dockPhone = matchMedia('(max-width: 600px)');
+function setDockMode(mode) {
+  uartSection.classList.toggle('dock-min', mode === 'min');
+  uartSection.classList.toggle('dock-full', mode === 'full');
+  const full = document.getElementById('uartDockFull');
+  full.setAttribute('aria-pressed', String(mode === 'full'));
+  full.textContent = mode === 'full' ? '⤡' : '⤢';
+  const min = document.getElementById('uartDockMin');
+  min.textContent = mode === 'min' ? '▴' : '▾';
+  min.setAttribute('aria-label', mode === 'min' ? 'Restore console' : 'Minimize console');
+}
+function padForDock() {
+  const space = dockPhone.matches && !uartWindowMode ? uartDock.offsetHeight : 0;
+  document.body.style.setProperty('--dock-space', `${space}px`);
+}
+// The pop-out window has no dock: its <details> and <summary> were replaced above.
+if (!uartWindowMode) {
+  new ResizeObserver(padForDock).observe(uartDock);
+  dockPhone.addEventListener('change', padForDock);
+  const savedHeight = loadPref('relay_panel_dock_h', null);
+  if (savedHeight) uartSection.style.setProperty('--dock-h', `${savedHeight}px`);
+  uartSection.querySelector('summary').addEventListener('click', event => {
+    // A minimized dock reopens instead of closing, which would disconnect.
+    if (event.target.closest('.uart-dock-btn')) return;
+    if (dockPhone.matches && uartSection.open && uartSection.classList.contains('dock-min')) {
+      event.preventDefault(); setDockMode('normal');
+    }
+  });
+  document.getElementById('uartDockMin').addEventListener('click', event => {
+    event.preventDefault(); setDockMode(uartSection.classList.contains('dock-min') ? 'normal' : 'min');
+  });
+  document.getElementById('uartDockFull').addEventListener('click', event => {
+    event.preventDefault(); setDockMode(uartSection.classList.contains('dock-full') ? 'normal' : 'full');
+  });
+  document.getElementById('uartDockHandle').addEventListener('pointerdown', event => {
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    setDockMode('normal');
+    const move = e => {
+      const height = Math.round(Math.min(innerHeight - 40, Math.max(140, innerHeight - e.clientY)));
+      uartSection.style.setProperty('--dock-h', `${height}px`);
+    };
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      const height = parseInt(uartSection.style.getPropertyValue('--dock-h'), 10);
+      if (height) savePref('relay_panel_dock_h', height);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end, { once: true });
+    handle.addEventListener('pointercancel', end, { once: true });
+  });
+}
 document.getElementById('uartClear').addEventListener('click', () => { uartLog = new UartLog(); paintUartOutput(); });
 document.getElementById('uartPopout').addEventListener('click', popOutUart);
 document.getElementById('uartConnect').addEventListener('click', () => {

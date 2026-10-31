@@ -487,6 +487,66 @@ async function test(name, run) {
     for (const [name, outcome] of Object.entries(result)) assert.ok(outcome.consistent, `${name} miscounted its size`);
   });
 
+  await test('phone dock keeps the console on screen while relays are used', async page => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.click('#uartSection > summary');
+    await page.waitForFunction(() => document.querySelectorAll('#uartPortSelect option').length === 26);
+    assert.equal(await page.locator('#uartPorts').isVisible(), false, 'phones pick a port from the dropdown');
+    await page.selectOption('#uartPortSelect', '5');
+    await output(page, 'ttyUSB5 demo');
+    const dock = await page.evaluate(() => {
+      const box = document.querySelector('.uart-container').getBoundingClientRect();
+      return { top: box.top, bottom: box.bottom, overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    assert.equal(Math.round(dock.bottom), 844, 'the dock sits on the bottom edge');
+    assert.ok(dock.top > 844 * 0.4, 'the dock leaves the controls most of the screen');
+    assert.equal(dock.overflow, false);
+    // A relay above the dock stays usable while the console streams.
+    const relay = '[data-board="0"][data-relay="1"]';
+    const before = await page.getAttribute(relay, 'aria-pressed');
+    await page.click(relay);
+    await page.waitForFunction(([sel, was]) => document.querySelector(sel).getAttribute('aria-pressed') !== was, [relay, before]);
+    assert.equal(await page.textContent('#uartConnection'), 'Connected');
+    // The end of the page scrolls clear of the dock.
+    const clear = await page.evaluate(() => {
+      scrollTo(0, document.documentElement.scrollHeight);
+      const last = [...document.querySelectorAll('.board-section')].pop().getBoundingClientRect();
+      return last.bottom <= document.querySelector('.uart-container').getBoundingClientRect().top + 1;
+    });
+    assert.equal(clear, true, 'last section must scroll above the dock');
+    // Minimizing keeps streaming; tapping the title bar restores rather than disconnects.
+    await page.click('#uartDockMin');
+    assert.equal(await page.locator('#uartOutput').isVisible(), false);
+    await page.evaluate(() => { uartLog.feed(5, 'while minimized\n'); paintUartOutput(); });
+    await page.click('#uartSection > summary');
+    assert.equal(await page.evaluate(() => uartSection.open), true);
+    await output(page, 'while minimized');
+    await page.click('#uartDockFull');
+    assert.ok(await page.evaluate(() => document.querySelector('.uart-section').getBoundingClientRect().height) > 844 * 0.9);
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.uart-container')).position), 'static',
+      'desktop keeps the console in the page');
+  });
+
+  await test('sections collapse and unnamed relays hide, both remembered', async page => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const height = () => page.evaluate(() => document.documentElement.scrollHeight);
+    const full = await height();
+    await page.click('[data-collapse="board:1"]');
+    assert.ok(await height() < full - 300, 'a collapsed board gives its height back');
+    assert.match(await page.textContent('[data-board-idx="1"] .collapsed-summary'), /^\d+ on$/);
+    assert.equal(await page.locator('[data-board-idx="1"] .board-actions').isVisible(), false);
+    await page.evaluate(() => { state.boards[0].relays[2].name = 'Relay 2'; renderedStructure = null; render(); });
+    await page.click('#hideUnnamedBtn');
+    assert.equal(await page.locator('[data-board="0"][data-relay="2"]').isVisible(), false);
+    await page.click('#editModeBtn');
+    assert.equal(await page.locator('[data-board="0"][data-relay="2"]').isVisible(), true, 'edit mode shows them to rename');
+    await page.click('#editModeBtn');
+    await page.reload({ waitUntil: 'networkidle' });
+    assert.equal(await page.evaluate(() => document.querySelector('[data-board-idx="1"]').classList.contains('collapsed')), true);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('hide-unnamed')), true);
+  });
+
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);
   process.exitCode = failed ? 1 : 0;
 })().catch(error => {
