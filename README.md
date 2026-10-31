@@ -141,6 +141,8 @@ static/index.html    the whole web UI, single file, no build step
 mcp-server.py        MCP server exposing the API as tools (30 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
 mcp/usb-hotplug/     MCP server pushing USB plug/unplug events (Bun)
+pi/                  ser2net config and CH348 port-ordering script for the Pi
+tools/               uart-listen-all.py: find which board is on which port
 deploy.py            state-preserving deploy to the Orange Pi
 demo.py              runs the panel against stubbed hardware
 test-pwm.py          pure-logic tests, no hardware, run anywhere
@@ -219,6 +221,36 @@ ssh $PI 'systemctl daemon-reload && systemctl enable --now relay-panel'
 Then open `http://your-pi:8080` and add your boards, GPIOs and PWM chips from
 the web UI. Nothing else needs editing — the config is built through the UI, not
 checked in.
+
+### Serial consoles (ser2net)
+
+The UART consoles, the uart MCP server and `tools/uart-listen-all.py` all read
+ser2net's raw TCP ports. `pi/` holds the Pi side:
+
+```bash
+scp pi/ser2net.yaml $PI:/etc/ser2net.yaml          # ttyUSB0-23 -> TCP 3000-3023
+scp pi/ch348-order.sh $PI:/usr/local/bin/
+scp pi/ch348-order.default $PI:/etc/default/ch348-order
+scp pi/ch348-order.service $PI:/etc/systemd/system/
+ssh $PI 'systemctl daemon-reload && systemctl enable ch348-order ser2net'
+```
+
+`ch348-order.sh` is for WCH CH348 8-port USB serial adapters. Linux numbers
+`ttyUSB` in enumeration order, which can change between boots, so the script
+re-authorizes the adapters one at a time in a fixed order: each lands on the
+same block of eight every boot. Run `ch348-order.sh --dry-run` to see each
+adapter's key, then list them in `/etc/default/ch348-order` in the order you
+want. With nothing listed, adapters go in sorted key order. Adapters other than
+the CH348 need their own rule (udev symlinks by serial number, typically).
+
+After any re-wire, power the boards one at a time while
+`UART_HOST=your-pi tools/uart-listen-all.py 40` runs; it prints which ports
+spoke and the U-Boot CPU/model line each one printed, which is the quickest way
+to rebuild a port-to-board map.
+
+Flashing is a separate daemon, `dfu-remote` from
+[thingino-dfu](https://github.com/gtxaspec/thingino-dfu); the panel's USB section
+and `deploy.py` only watch it.
 
 ### Porting to other hardware
 

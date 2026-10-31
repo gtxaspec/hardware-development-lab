@@ -1,0 +1,173 @@
+# ser2net config: ttyUSB0-23 -> raw TCP 3000-3023, 115200 8N1.
+# Matches the defaults of RELAY_PANEL_UART_* and the uart MCP's UART_*.
+
+%YAML 1.1
+---
+
+connection: &ttyUSB0
+  accepter: tcp,3000
+  connector: serialdev,/dev/ttyUSB0,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB1
+  accepter: tcp,3001
+  connector: serialdev,/dev/ttyUSB1,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB2
+  accepter: tcp,3002
+  connector: serialdev,/dev/ttyUSB2,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB3
+  accepter: tcp,3003
+  connector: serialdev,/dev/ttyUSB3,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB4
+  accepter: tcp,3004
+  connector: serialdev,/dev/ttyUSB4,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB5
+  accepter: tcp,3005
+  connector: serialdev,/dev/ttyUSB5,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB6
+  accepter: tcp,3006
+  connector: serialdev,/dev/ttyUSB6,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB7
+  accepter: tcp,3007
+  connector: serialdev,/dev/ttyUSB7,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB8
+  accepter: tcp,3008
+  connector: serialdev,/dev/ttyUSB8,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB9
+  accepter: tcp,3009
+  connector: serialdev,/dev/ttyUSB9,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB10
+  accepter: tcp,3010
+  connector: serialdev,/dev/ttyUSB10,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB11
+  accepter: tcp,3011
+  connector: serialdev,/dev/ttyUSB11,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB12
+  accepter: tcp,3012
+  connector: serialdev,/dev/ttyUSB12,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB13
+  accepter: tcp,3013
+  connector: serialdev,/dev/ttyUSB13,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB14
+  accepter: tcp,3014
+  connector: serialdev,/dev/ttyUSB14,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB15
+  accepter: tcp,3015
+  connector: serialdev,/dev/ttyUSB15,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB16
+  accepter: tcp,3016
+  connector: serialdev,/dev/ttyUSB16,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB17
+  accepter: tcp,3017
+  connector: serialdev,/dev/ttyUSB17,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB18
+  accepter: tcp,3018
+  connector: serialdev,/dev/ttyUSB18,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB19
+  accepter: tcp,3019
+  connector: serialdev,/dev/ttyUSB19,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB20
+  accepter: tcp,3020
+  connector: serialdev,/dev/ttyUSB20,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB21
+  accepter: tcp,3021
+  connector: serialdev,/dev/ttyUSB21,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB22
+  accepter: tcp,3022
+  connector: serialdev,/dev/ttyUSB22,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4
+
+connection: &ttyUSB23
+  accepter: tcp,3023
+  connector: serialdev,/dev/ttyUSB23,115200n81,local
+  options:
+    kickolduser: false
+    max-connections: 4

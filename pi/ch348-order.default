@@ -1,0 +1,3 @@
+# Copy to /etc/default/ch348-order. Keys are <platform controller>:<hub port
+# chain>, printed by `ch348-order.sh --dry-run`; the first gets ttyUSB0-7.
+CH348_ORDER=""

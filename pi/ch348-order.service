@@ -1,0 +1,11 @@
+[Unit]
+Description=Reorder CH348 USB serial adapters for stable ttyUSB numbering
+After=systemd-udev-settle.service
+Before=ser2net.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ch348-order.sh
+
+[Install]
+WantedBy=multi-user.target
