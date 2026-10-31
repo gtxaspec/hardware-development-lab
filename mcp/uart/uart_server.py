@@ -15,7 +15,7 @@ import re
 import socket
 import threading
 import time
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 UART_HOST = os.environ.get("UART_HOST", "localhost")
 UART_BASE_PORT = int(os.environ.get("UART_BASE_PORT", "3000"))
@@ -284,7 +284,7 @@ def _log_path(dev: dict, suffix: str = "") -> str:
     return os.path.join(LOG_DIR, f"{dev['label']}{suffix}.log")
 
 
-mcp = FastMCP("uart")
+mcp = MCPServer("uart")
 
 
 # ── Write tools ──────────────────────────────────────────────

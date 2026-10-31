@@ -4,13 +4,13 @@
 import os
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Where the panel is reachable. Set RELAY_PANEL_URL in the MCP server's env if
 # it runs on a different machine to the panel, which is the usual case.
 BASE_URL = os.environ.get("RELAY_PANEL_URL", "http://localhost:8080")
 
-mcp = FastMCP(
+mcp = MCPServer(
     "relay-panel",
     instructions=(
         "Control I2C relay boards and direct GPIO pins on a hardware test bench. "
