@@ -1,0 +1,68 @@
+# bench.example.toml - the shape of the bench map the skills and tools read.
+#
+# Copy to bench.toml (gitignored) and describe your own bench. Every value
+# here is a placeholder. `tools/bench.py list` prints your devices,
+# `tools/bench.py show <device>` one device with defaults filled in, and
+# `tools/bench.py check` compares the file with the live panel.
+
+# Base URL of the relay panel. Required.
+panel_url = "http://panel.example:8080"
+
+# Host running the dfu-remote flashing daemon (thingino-dfu --host). Usually
+# the panel's Pi. Optional; skills that flash need it.
+dfu_host = "panel.example"
+
+# Where /deploy-dfu installs dfu-remote on the Pi. Default shown.
+dfu_dir = "/root/thingino-dfu-linux-aarch64"
+
+# ssh target on the Pi, for skills that run commands there (USB capture,
+# daemon deploy). Optional.
+ssh = "root@panel.example"
+
+# usbmon bus the devices enumerate on, for /capture (`lsusb` shows the bus).
+usbmon_bus = 1
+
+# USB id the SoC bootrom enumerates with. Default a108:c309 (Ingenic).
+bootrom_vid_pid = "a108:c309"
+
+# Seconds between closing the boot pin and applying power. Default 3.
+settle_secs = 3
+
+# How long to wait for the bootrom to enumerate. Default 90. Never a fixed
+# sleep: wait for the USB event and stop the moment it arrives.
+enumerate_timeout_secs = 90
+
+# Relays whose name contains this (case-insensitive) are bench rails, not a
+# device: the skills never switch them and an idle check ignores them.
+master_name_contains = "master"
+
+# One table per device. The key is the name you pass to the skills.
+[devices.example_a]
+# Relay feeding the device power. `board` is the 0-based board index in
+# GET /api/state; `relay` the relay number on that board.
+power = { board = 0, relay = 0 }
+# Relay holding the boot pin. Closed at power-on it forces USB boot; open it
+# again as soon as the bootrom enumerates, which is required before any
+# flash write.
+boot = { board = 1, relay = 0 }
+# Optional: the device's console, as a uart MCP port (5, "ttyUSB5" or 3005)
+# or alias. Leave unset until you have seen this board's banner on the port.
+uart = "ttyUSB0"
+# Optional, free text.
+notes = "placeholder"
+
+[devices.example_b]
+power = { board = 0, relay = 1 }
+boot = { board = 1, relay = 1 }
+# Optional, for a unit whose USB goes through a mux GPIO. `wpi` is the
+# wiringPi pin as configured on the panel; `host_state` is the state that
+# routes the SoC's USB device port to the Pi, where the bootrom and DFU
+# gadget are visible. Default "off".
+usb_mux = { wpi = 0, host_state = "off" }
+# Optional, for a unit that will not cold boot while a line is connected (a
+# console TX that back-powers the SoC, say): this relay is opened before
+# power-on and closed again once the device is up.
+detach = { board = 2, relay = 1 }
+# Per-device overrides of the bench-wide values above.
+enumerate_timeout_secs = 120
+settle_secs = 4

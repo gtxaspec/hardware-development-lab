@@ -142,7 +142,11 @@ mcp-server.py        MCP server exposing the API as tools (30 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
 mcp/usb-hotplug/     MCP server pushing USB plug/unplug events (Bun)
 pi/                  ser2net config and CH348 port-ordering script for the Pi
-tools/               uart-listen-all.py: find which board is on which port
+tools/bench.py       reads bench.toml: list devices, show one, check against the panel
+tools/uart-listen-all.py  find which board is on which port
+skills/              Claude Code skills: /flash, /bootstrap, /poweroff, /uart, ...
+bench.example.toml   the bench map format; copy to bench.toml (gitignored)
+docs/bench.md        how the parts fit together, and bench habits
 deploy.py            state-preserving deploy to the Orange Pi
 demo.py              runs the panel against stubbed hardware
 test-pwm.py          pure-logic tests, no hardware, run anywhere
@@ -598,6 +602,32 @@ bun install --cwd mcp/usb-hotplug
     "args": ["run", "/path/to/relay-panel/mcp/usb-hotplug/server.ts"],
     "env": {"USB_HOTPLUG_HOST": "root@your-pi"}}}}
 ```
+
+## Skills and the bench map
+
+`skills/` holds Claude Code skills that drive a whole flash or boot cycle
+through the three MCP servers. They know nothing about a particular bench:
+each looks the device up in `bench.toml` through `tools/bench.py` (Python
+3.11+).
+
+```bash
+cp bench.example.toml bench.toml      # then describe your devices
+tools/bench.py check                  # compare it with the live panel
+ln -s "$PWD"/skills/* ~/.claude/skills/
+```
+
+| Skill | Does |
+|---|---|
+| `/flash <device> <image>` | bootrom, DFU write, cold boot (`/flash cloner ...` for the legacy path) |
+| `/remote-flash <device> <image>` | same as `/flash` with DFU |
+| `/bootstrap <device>` | bootrom into U-Boot DFU, no write |
+| `/poweroff <device\|all>` | power and boot pin off |
+| `/uart ...` | console logs, rotation, U-Boot break-in |
+| `/capture start\|stop` | usbmon capture on the Pi |
+| `/deploy-dfu [checkout]` | build and install `dfu-remote` on the Pi |
+
+[docs/bench.md](docs/bench.md) covers the boot sequence, development loops
+and bench habits.
 
 ## API
 
