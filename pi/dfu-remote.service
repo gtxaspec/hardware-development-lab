@@ -1,0 +1,15 @@
+# thingino-dfu's flashing daemon. Install the release (or /deploy-dfu's copy)
+# in /root/thingino-dfu-linux-aarch64, or change both paths below.
+[Unit]
+Description=thingino-dfu remote daemon (USB bootstrap/flash proxy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/root/thingino-dfu-linux-aarch64/dfu-remote -p 5050 --firmware-dir /root/thingino-dfu-linux-aarch64/firmware
+WorkingDirectory=/root/thingino-dfu-linux-aarch64
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -142,7 +142,7 @@ machine, where Claude Code runs.
 | Runs on | What | Needs |
 |---|---|---|
 | Pi (any SBC with I²C) | `relay-panel.py`, ser2net, `ch348-order`, `dfu-remote` | Python 3.7+, `curl` (for `deploy.py`), `i2c-tools`, I²C enabled in the device tree, `wiringOP` (GPIOs only), `ser2net` 4.x, `usbutils`, `udev`; `tcpdump` + the `usbmon` module for `/capture` |
-| Dev machine | the three MCP servers, the skills, `tools/`, the `thingino-dfu` client | Python 3.11+, [Bun](https://bun.sh), key-based root ssh to the Pi, [thingino-dfu](https://github.com/gtxaspec/thingino-dfu) installed (its build toolchain too, for `/deploy-dfu`) |
+| Dev machine | the three MCP servers, the skills, `tools/`, the `thingino-dfu` client | Python 3.11+, [Bun](https://bun.sh), `socat` + `dialog` (`uart-monitor`), key-based root ssh to the Pi, [thingino-dfu](https://github.com/gtxaspec/thingino-dfu) installed (its build toolchain too, for `/deploy-dfu`) |
 
 In order:
 
@@ -150,9 +150,10 @@ In order:
    add the relay boards, GPIOs and PWM chips, and name every relay after the
    device it drives (rails get "master" in the name).
 2. **Serial consoles on the Pi**: [Serial consoles](#serial-consoles-ser2net).
-3. **Flashing daemon on the Pi**: build and install `dfu-remote` from
-   thingino-dfu (`/deploy-dfu` does it once the rest is up), and run it as a
-   service listening on 5050.
+3. **Flashing daemon on the Pi**: install `dfu-remote` from thingino-dfu (a
+   release, or `/deploy-dfu` once the rest is up) and run it as a service on
+   port 5050: `scp pi/dfu-remote.service $PI:/etc/systemd/system/`, then
+   `systemctl enable --now dfu-remote`.
 4. **Dev machine**: the MCP venv and Bun packages, then register all three
    servers in `~/.mcp.json` ([MCP server](#mcp-server),
    [UART and USB MCP servers](#uart-and-usb-mcp-servers)).
@@ -173,9 +174,10 @@ static/index.html    the whole web UI, single file, no build step
 mcp-server.py        MCP server exposing the API as tools (30 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
 mcp/usb-hotplug/     MCP server pushing USB plug/unplug events (Bun)
-pi/                  ser2net config and CH348 port-ordering script for the Pi
+pi/                  ser2net config, CH348 port ordering, dfu-remote unit for the Pi
 tools/bench.py       reads bench.toml: list devices, show one, check against the panel
 tools/uart-listen-all.py  find which board is on which port
+tools/uart-monitor   terminal console viewer: pick a port, or watch them all labelled
 skills/              Claude Code skills: /flash, /bootstrap, /poweroff, /uart, ...
 bench.example.toml   the bench map format; copy to bench.toml (gitignored)
 docs/bench.md        how the parts fit together, and bench habits
@@ -271,6 +273,22 @@ scp pi/ch348-order.service $PI:/etc/systemd/system/
 ssh $PI 'systemctl daemon-reload && systemctl enable ch348-order ser2net'
 ```
 
+**CH348 adapters need a driver.** Kernels without `ch348` in
+`drivers/usb/serial` see each adapter as nothing usable. Build the out-of-tree
+driver (GPL-2.0, the version proposed for mainline) against your kernel's
+headers; this bench runs commit `7ad39940`:
+
+```bash
+ssh $PI 'apt-get install -y build-essential git && \
+  git clone https://github.com/xdarklight/ch348 /root/ch348 && cd /root/ch348 && \
+  git checkout 7ad39940446f28eab060de33dbd714979ee869d1 && \
+  make && make install && echo ch348 > /etc/modules-load.d/ch348.conf && modprobe ch348'
+```
+
+It needs the running kernel's headers (`/lib/modules/$(uname -r)/build`), and
+has to be rebuilt after a kernel upgrade. Other adapters (CP210x, FTDI, CH341)
+use drivers already in the kernel.
+
 `ch348-order.sh` is for WCH CH348 8-port USB serial adapters. Linux numbers
 `ttyUSB` in enumeration order, which can change between boots, so the script
 re-authorizes the adapters one at a time in a fixed order: each lands on the
@@ -278,6 +296,9 @@ same block of eight every boot. Run `ch348-order.sh --dry-run` to see each
 adapter's key, then list them in `/etc/default/ch348-order` in the order you
 want. With nothing listed, adapters go in sorted key order. Adapters other than
 the CH348 need their own rule (udev symlinks by serial number, typically).
+
+To watch consoles from a terminal, `UART_HOST=your-pi tools/uart-monitor` gives
+a menu of ports (`-a` for all of them labelled, `-i` to type into one).
 
 After any re-wire, power the boards one at a time while
 `UART_HOST=your-pi tools/uart-listen-all.py 40` runs; it prints which ports
@@ -483,6 +504,18 @@ by clicking a card, edit a board's address by clicking its address line, and the
 you cannot delete a channel by fumbling a slider.
 
 Keyboard: arrows navigate, `Enter` toggles, `A` all on, `Z` all off, `E` edit mode.
+
+Every section collapses with the ▼ beside its name (collapsed, it shows how many
+of its switches are on), and **Hide unnamed** hides relays still called
+`Relay N`; edit mode shows them again for renaming. Both are remembered per
+browser.
+
+**On a phone** (under 600 px) the console docks to the bottom of the screen
+while the controls scroll above it, so you can switch a relay and watch the boot
+at once. Drag its handle to resize, ▾ shrinks it to its title bar without
+disconnecting, ⤢ makes it full screen, and the port comes from a dropdown.
+Relay boards show one line per relay, and `+ Board` / `+ GPIO` / `+ PWM` appear
+only in edit mode.
 
 ## LED PWM notes
 

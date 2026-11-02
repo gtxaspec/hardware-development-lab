@@ -1,0 +1,71 @@
+#!/bin/bash
+# uart-monitor [-i | -a]: pick a ser2net console from a menu and watch it.
+#   -i  interactive (your keystrokes go to the board)   -a  all ports, labelled
+# Needs socat and dialog. Host and ports from UART_HOST, UART_BASE_PORT, UART_COUNT.
+
+HOST="${UART_HOST:-localhost}"
+BASE_PORT="${UART_BASE_PORT:-3000}"
+COUNT="${UART_COUNT:-24}"
+MODE=""
+
+case "$1" in
+    -i) MODE=interactive ;;
+    -a) MODE=all ;;
+esac
+
+LABELS=()
+for ((i = 0; i < COUNT; i++)); do LABELS+=("ttyUSB$i"); done
+
+if [[ "$MODE" == "all" ]]; then
+    PIDS=()
+    cleanup() { kill "${PIDS[@]}" 2>/dev/null; wait "${PIDS[@]}" 2>/dev/null; }
+    trap cleanup EXIT
+    echo "Monitoring all UARTs on $HOST (Ctrl-C to stop)"
+    echo "---"
+    for ((i = 0; i < COUNT; i++)); do
+        socat -u "TCP:$HOST:$((BASE_PORT + i))" - 2>/dev/null | sed -u "s/^/${LABELS[$i]}: /" &
+        PIDS+=($!)
+    done
+    wait
+    exit
+fi
+
+while true; do
+    items=()
+    for ((i = 0; i < COUNT; i++)); do
+        items+=("$((BASE_PORT + i))" "${LABELS[$i]}")
+    done
+
+    items+=("all" "--- All ports (prefixed) ---")
+
+    port=$(dialog --no-tags --title "UART Monitor" \
+        --menu "Pick a UART:" 30 40 $((COUNT + 1)) \
+        "${items[@]}" 2>&1 >/dev/tty) || break
+
+    clear
+    if [[ "$port" == "all" ]]; then
+        PIDS=()
+        cleanup() { kill "${PIDS[@]}" 2>/dev/null; wait "${PIDS[@]}" 2>/dev/null; }
+        trap cleanup EXIT
+        echo "Monitoring all UARTs on $HOST (Ctrl-C to stop)"
+        echo "---"
+        for ((i = 0; i < COUNT; i++)); do
+            socat -u "TCP:$HOST:$((BASE_PORT + i))" - 2>/dev/null | sed -u "s/^/${LABELS[$i]}: /" &
+            PIDS+=($!)
+        done
+        wait
+        sleep 1
+        continue
+    fi
+
+    label="${LABELS[$((port - BASE_PORT))]}"
+    if [[ "$MODE" == "interactive" ]]; then
+        echo "--- $label on $HOST:$port [interactive] (Ctrl-C to stop) ---"
+        socat "TCP:$HOST:$port" -,rawer
+    else
+        echo "--- $label on $HOST:$port [read-only] (Ctrl-C to stop) ---"
+        socat -u "TCP:$HOST:$port" -
+    fi
+    sleep 1
+done
+clear
