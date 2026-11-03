@@ -906,6 +906,9 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-port[data-status="connected"]::before { background: var(--on); }
 .uart-port[data-status="connecting"]::before, .uart-port[data-status="disconnected"]::before { background: #d8aa50; }
 .uart-port[aria-pressed="true"] { border-color: var(--focus); background: var(--surface-active); }
+.uart-port { min-width: 0; }
+.uart-port-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.uart-port-named { grid-column: span 2; }
 .uart-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
 .uart-toolbar h3 { margin: 0; font-size: 0.9rem; }
 .uart-connection { color: var(--text-dim); font-size: 0.75rem; }
@@ -3488,7 +3491,10 @@ async function loadUarts() {
     if (!uartChoices.length) break;
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'btn-surface uart-port';
-    button.dataset.uart = port.index; button.textContent = port.name;
+    button.dataset.uart = port.index;
+    // A span, so a long name can end in an ellipsis inside the flex button.
+    button.append(Object.assign(document.createElement('span'), { className: 'uart-port-name', textContent: port.name }));
+    if (port.backpack !== undefined) button.classList.add('uart-port-named');
     button.addEventListener('click', () => startUart(port.index));
     ports.appendChild(button);
   }
