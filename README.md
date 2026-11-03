@@ -3,14 +3,17 @@
 The software for a camera bring-up bench. At its centre is a relay panel: a web
 UI and HTTP API for I²C relay boards, direct GPIO pins, dimmable LED strips, live
 UART consoles, and a view of which devices are sitting in a flashable USB state.
-Around it are Claude Code MCP servers and skills that drive whole flash and boot
-cycles, and the Pi-side serial setup.
+It also drives [thingino backpacks](#backpacks): ESP32 units, each strapped to
+one camera, that switch its power and boot pin and serve its USB and console
+over the network, so a camera can sit anywhere on the network rather than on the
+bench. Around it are Claude Code MCP servers and skills that drive whole flash
+and boot cycles, and the Pi-side serial setup.
 
 The panel runs on a single-board computer wired into the bench — an Orange Pi
 here, but anything with I²C and a `gpio` CLI will do — and serves on port 8080.
 
 ![The panel: two relay boards in PCB view, GPIO pins, LED strips with a group
-master, and connected USB devices](docs/screenshot.png)
+master, a backpack's card, and connected USB devices](docs/screenshot.png)
 
 Try it with no hardware at all:
 
@@ -27,6 +30,7 @@ Try it with no hardware at all:
 | **LED PWM** | PCA9685 16-channel, driving 12 V strips through MOSFET modules | bus + address, typically `0x40` | 12-bit duty per channel, 24–1526 Hz, channel groups |
 | **USB** | Ingenic bootrom / U-Boot DFU gadget | read-only | shows what is flashable right now |
 | **UART** | Raw TCP consoles provided by ser2net | `ttyUSB0`–`ttyUSB23`, ports 3000–3023 by default | live output, individually or all together; typing when switched to interactive |
+| **Backpacks** | [thingino backpack](https://github.com/thingino/thingino-backpack) ESP32 units, one per camera | found over mDNS, or added by address | camera power, boot pin, enter bootrom, power cycle, USB view, console; flashing goes to the unit |
 
 The PWM section exists to simulate day/night transitions for camera testing:
 continuous, repeatable light levels rather than the relay-binary room light the
@@ -162,6 +166,10 @@ In order:
 6. **Consoles**: power each board with `tools/uart-listen-all.py` running, then
    put the port it spoke on into that device's `uart` in `bench.toml`.
 7. **Skills**: link them in and try `/poweroff all`, then `/bootstrap <device>`.
+8. **Backpacks** (optional): flash thingino-backpack firmware onto an ESP32 per
+   camera and join it to the network; the panel adds it by itself within a
+   minute ([Backpacks](#backpacks)). In `bench.toml`, give that camera
+   `backpack = "<name>"` instead of relays.
 
 Before exposing the panel beyond your own network, read [Access](#access).
 
@@ -172,7 +180,7 @@ relay-panel.py       the server: HTTP API + hardware access. Pure stdlib.
 uart_stream.py       on-demand TCP console fan-out and input
 backpacks.py         thingino backpacks: polling, actions, mDNS discovery
 static/index.html    the whole web UI, single file, no build step
-mcp-server.py        MCP server exposing the API as tools (30 of them)
+mcp-server.py        MCP server exposing the API as tools (33 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
 mcp/usb-hotplug/     MCP server pushing USB plug/unplug events (Bun)
 pi/                  ser2net config, CH348 port ordering, dfu-remote unit for the Pi
@@ -756,6 +764,9 @@ reuses `/flash`'s steps) through its real location in this repo.
 | `/uart ...` | console logs, rotation, U-Boot break-in |
 | `/capture start\|stop` | usbmon capture on the Pi |
 | `/deploy-dfu [checkout]` | build and install `dfu-remote` on the Pi |
+
+Every skill works the same for a camera on a backpack: `bench.toml` says which,
+and the skill uses the unit's `bootrom` action and DFU address instead of relays.
 
 [docs/bench.md](docs/bench.md) covers the boot sequence, development loops
 and bench habits.

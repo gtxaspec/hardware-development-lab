@@ -16,6 +16,7 @@ see `bench.example.toml`.
 | relay-panel MCP | dev machine, `mcp-server.py` | the panel API as Claude Code tools |
 | uart MCP | dev machine, `mcp/uart/` | console read/write, background logs |
 | usb-hotplug MCP | dev machine, `mcp/usb-hotplug/` | USB add/remove events, `usb_wait` |
+| Backpacks | ESP32 per camera, [thingino-backpack](https://github.com/thingino/thingino-backpack) | a camera's power, boot pin, USB (with its own `dfu-remote`) and console, over the network; the panel finds and drives them |
 | skills | dev machine, `skills/` | `/flash`, `/bootstrap`, `/poweroff`, `/uart`, `/capture`, `/deploy-dfu` |
 | `bench.toml` | repo root, gitignored | device name -> relays, mux, console port |
 
@@ -28,9 +29,11 @@ to USB boot. Bench-wide rails (a 5 V or 12 V supply on a relay) carry
 
 1. Name the relays in the panel UI after the devices they drive.
 2. Copy `bench.example.toml` to `bench.toml`; add one `[devices.<name>]` per
-   unit with its `power` and `boot` relays.
+   unit with its `power` and `boot` relays, or, for a camera on a backpack,
+   `backpack = "<name>"` (the name the panel lists it under).
 3. `tools/bench.py check` reads the live panel and prints the panel's name
-   for every relay you listed, flagging clashes and rails.
+   for every relay you listed, flagging clashes and rails, and whether each
+   named backpack is there and online.
 4. Leave `uart` unset until you have seen the board's boot banner on a port
    (`tools/uart-listen-all.py` while you power it). A wrong console mapping
    is worse than none: silence on the wrong port reads as "board dead".
@@ -43,6 +46,10 @@ to USB boot. Bench-wide rails (a 5 V or 12 V supply on a relay) carry
 4. `usb_wait` for the bootrom's USB id. Never a fixed sleep: some bootroms
    take 80 s, most under 10.
 5. Boot pin off. Required before any flash write.
+
+On a backpack all five steps are one call, the unit's `bootrom` action (the
+card's **Enter bootrom**): it holds the pin, power-cycles, and lets go the
+moment the bootrom enumerates on its own USB port.
 
 ## Development loops, fastest first
 

@@ -491,7 +491,7 @@ def main():
     ap.add_argument("--screenshot", metavar="PATH",
                     help="capture to PATH and exit instead of serving")
     ap.add_argument("--width", type=int, default=1600)
-    ap.add_argument("--height", type=int, default=1120)
+    ap.add_argument("--height", type=int, default=1500)
     ap.add_argument("--chrome", help="path to a Chromium binary")
     ap.add_argument("--usb-vid", default="",
                     help="watch this USB vendor so the USB section has content "
