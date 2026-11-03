@@ -22,7 +22,10 @@ see `bench.example.toml`.
 
 Each device needs two relays: one switching its power, one shorting a boot
 pin (on Ingenic, typically SPI flash DI to ground) so the bootrom falls back
-to USB boot. Bench-wide rails (a 5 V or 12 V supply on a relay) carry
+to USB boot. A camera powered over USB gets that power through a TS3USB30
+breakout's common 5 V rail, which also lets a GPIO steer its USB data between
+the Pi (for flashing) and a peripheral; the breakout switches data only, the
+relay switches the power (README, "One camera on USB"). Bench-wide rails (a 5 V or 12 V supply on a relay) carry
 "master" in their panel name and are never switched by the skills.
 
 ## Setting up bench.toml

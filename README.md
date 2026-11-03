@@ -73,12 +73,32 @@ GPIO pins, so the whole bench is three wires from the SBC.
                                              12 V PSU ┘ (+ to strip directly)
 ```
 
+### One camera on USB
+
+A camera that takes its power and its USB through one connector hangs off a
+TS3USB30 breakout. The relay is the power switch; the breakout's common 5 V
+rail carries that switched 5 V to the camera's USB connector (or its pads),
+and the chip itself only steers the data lines:
+
+```
+            XL9535 relay
+ 5 V PSU ───────┤├──────► breakout's common 5 V rail ──┐
+                                                       │ 5 V, GND
+                         ┌─────────────────────────────▼───┐
+ SBC's USB hub ──────────┤ port 1                          │  D+ / D−
+                         │          TS3USB30   common ─────┼──────────► camera's USB
+ USB peripheral ─────────┤ port 2                          │             connector
+ (e.g. Ethernet dongle)  │      S ▲                        │             (or pads)
+                         └────────┼────────────────────────┘
+              SBC GPIO, 3.3 V ────┘  low = port 1 (flashing), high = port 2
+```
+
 ### Bill of materials
 
 | Part | Role | Notes |
 |---|---|---|
 | Single-board computer | Runs the panel | Needs I²C and, for the GPIO section, a `gpio` CLI |
-| **TS3USB30** 1-to-2 USB switch breakout | Routes a device's USB between two hosts | Driven from one GPIO. 3.3 V logic, so straight off the header |
+| **TS3USB30** 1-to-2 USB switch breakout ([Adafruit 5871](https://www.adafruit.com/product/5871)) | Routes a camera's USB data between the SBC and a peripheral; its common 5 V rail feeds the camera's connector | One per USB camera. `S` from one GPIO, 3.3 V logic, so straight off the header. Switches data only: the relay switches the power |
 | **XL9535** 16-channel I²C relay board | Switches device power and boot-mode straps | Addresses `0x20`–`0x27` via jumpers, so up to 8 boards per bus |
 | **PCA9685** 16-channel PWM board | Dims the LED strips | Address `0x40`–`0x7F` via jumpers |
 | **D4184** dual-MOSFET trigger module (5–36 V, 15 A) | Power stage between PWM and strip | One per PWM channel. Low-side switching, rated to 20 kHz |
@@ -114,6 +134,13 @@ thing to check.
 
 **The relay board's logic supply and its relay coil supply may differ.** Common
 boards want 5 V for the coils while accepting 3.3 V logic. Check before wiring.
+
+**Power goes through the breakout's 5 V rail, but the breakout does not switch
+it.** Feed the relay-switched 5 V into the TS3USB30 board's common 5 V rail: its
+connectors and pads put 5 V, GND, D+ and D− together, so one cable to the camera
+carries both. The chip never touches VBUS (Adafruit: "power is not switched"),
+so cutting the camera's power is always the relay's job, and the power LED on
+the breakout shows whether that rail is live.
 
 **A USB mux is a select, not a power switch.** The TS3USB30's select pin routes
 the device's data lines to one of two downstream ports, so the panel's `on` /
