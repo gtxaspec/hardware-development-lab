@@ -58,7 +58,8 @@ TRUSTED_NETS = [
     if n.strip()
 ]
 
-USB_SYS_PATH = Path("/sys/bus/usb/devices")
+# Overridable so demo.py can show devices from a fake sysfs tree.
+USB_SYS_PATH = Path(os.environ.get("RELAY_PANEL_USB_SYS", "/sys/bus/usb/devices"))
 # Which USB vendor to watch for. Defaults to Ingenic, whose bootrom (a108:c309)
 # and U-Boot DFU gadget (a108:4d44) are what a camera bench wants to see; set
 # RELAY_PANEL_USB_VID to follow a different vendor.

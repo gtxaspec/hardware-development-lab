@@ -53,7 +53,10 @@ DEMO_CONFIG = {
     "gpios": [
         {"wpi": 27, "pin": 40, "name": "USB Mux A", "state": True},
         {"wpi": 26, "pin": 38, "name": "USB Mux B", "state": False},
-        {"wpi": 25, "pin": 37, "name": "Spare", "state": False},
+        {"wpi": 25, "pin": 37, "name": "USB Mux C", "state": False},
+        {"wpi": 24, "pin": 36, "name": "IR Cut Test", "state": True},
+        {"wpi": 23, "pin": 35, "name": "Door Sensor", "state": False},
+        {"wpi": 22, "pin": 33, "name": "Spare", "state": False},
     ],
     "pwm": [
         {"address": "0x40", "bus": 2, "name": "LED Strips", "freq_hz": 1526,
@@ -62,6 +65,17 @@ DEMO_CONFIG = {
          "groups": [{"name": "RGB Strip", "channels": [1, 2, 3]}]},
     ],
 }
+
+# Ingenic devices in the fake sysfs tree: a bootrom (with the strings real
+# ones report) and a U-Boot DFU gadget, on two hub ports.
+DEMO_USB = [
+    {"port": "3-1.1.2", "idVendor": "a108", "idProduct": "c309", "manufacturer": "Ingenic",
+     "product": "USB Boot Device", "busnum": "3", "devnum": "14"},
+    {"port": "3-1.1.4.2", "idVendor": "a108", "idProduct": "4d44", "manufacturer": "Ingenic",
+     "product": "USB download gadget", "serial": "T31X-0041b2", "busnum": "3", "devnum": "22"},
+    {"port": "3-1.2", "idVendor": "a108", "idProduct": "c309", "manufacturer": "Ingenic",
+     "product": "USB Boot Device", "busnum": "3", "devnum": "9"},
+]
 
 # Relays lit in the demo, as (board index, relay number).
 DEMO_RELAYS = [(0, 0), (0, 3), (0, 7), (0, 15), (1, 2)]
@@ -216,6 +230,12 @@ def build_sandbox(tmp, backpack=None):
                                 "mdns": backpack.name, "http_port": backpack.http_port,
                                 "console_port": backpack.console_port}]
     (panel / "config.json").write_text(json.dumps(config, indent=2))
+    for device in DEMO_USB:
+        node = tmp / "usb" / device["port"]
+        node.mkdir(parents=True)
+        for attr, value in device.items():
+            if attr != "port":
+                (node / attr).write_text(value + "\n")
     stub = binp / "_stub.py"
     stub.write_text(STUB)
     stub.chmod(0o755)
@@ -231,6 +251,11 @@ def seed(port):
             {"board": board, "relay": relay, "state": True})
     api(port, "POST", "/api/pwm/set", {"chip": 0, "channel": 0, "level": DEMO_WHITE})
     api(port, "POST", "/api/pwm/group", {"chip": 0, "group": 0, "level": DEMO_GROUP})
+    # The demo backpack sits in its camera's bootrom, so its card shows one.
+    try:
+        api(port, "POST", "/api/backpack/action", {"id": 1, "action": "bootrom"})
+    except (urllib.error.URLError, OSError):
+        pass
 
 
 class FakeBackpack:
@@ -491,11 +516,11 @@ def main():
     ap.add_argument("--screenshot", metavar="PATH",
                     help="capture to PATH and exit instead of serving")
     ap.add_argument("--width", type=int, default=1600)
-    ap.add_argument("--height", type=int, default=1500)
+    ap.add_argument("--height", type=int, default=2100)
     ap.add_argument("--chrome", help="path to a Chromium binary")
     ap.add_argument("--usb-vid", default="",
-                    help="watch this USB vendor so the USB section has content "
-                         "(default: none, section renders empty)")
+                    help="watch this USB vendor instead of Ingenic (a108); the demo's "
+                         "simulated devices are Ingenic, so another vendor shows none")
     args = ap.parse_args()
 
     port = args.port or free_port()
@@ -512,6 +537,7 @@ def main():
     env["RELAY_PANEL_HOST"] = "127.0.0.1"
     env["RELAY_PANEL_UART_HOST"] = "127.0.0.1"
     env["RELAY_PANEL_BACKPACK_DISCOVERY"] = "0"
+    env["RELAY_PANEL_USB_SYS"] = str(tmp / "usb")
     env["RELAY_PANEL_UART_BASE_PORT"] = str(uarts.base_port)
     env["RELAY_PANEL_UART_COUNT"] = "24"
     if args.usb_vid:
@@ -555,8 +581,8 @@ def main():
             [chrome, "--headless", "--disable-gpu", "--no-sandbox",
              "--hide-scrollbars", "--force-device-scale-factor=2",
              f"--window-size={args.width},{args.height}",
-             "--virtual-time-budget=6000", f"--screenshot={raw}",
-             f"http://127.0.0.1:{port}/"],
+             "--virtual-time-budget=30000", f"--screenshot={raw}",
+             f"http://127.0.0.1:{port}/#console=all"],
             check=True, capture_output=True)
 
         try:

@@ -13,7 +13,7 @@ The panel runs on a single-board computer wired into the bench — an Orange Pi
 here, but anything with I²C and a `gpio` CLI will do — and serves on port 8080.
 
 ![The panel: two relay boards in PCB view, GPIO pins, LED strips with a group
-master, a backpack's card, and connected USB devices](docs/screenshot.png)
+master, a backpack's card, Ingenic devices in USB boot, and every console streaming](docs/screenshot.png)
 
 Try it with no hardware at all:
 
@@ -378,6 +378,7 @@ All optional; the defaults suit a normal install.
 | `RELAY_PANEL_TRUSTED` | loopback + private ranges | server: networks with full access and no token; see [Access](#access) |
 | `RELAY_PANEL_URL` | `http://localhost:8080` | MCP servers: where the panel is (the uart server needs it for backpack consoles) |
 | `RELAY_PANEL_BACKPACK_DISCOVERY` | `1` | server: `0` stops looking for backpacks over mDNS |
+| `RELAY_PANEL_USB_SYS` | `/sys/bus/usb/devices` | server: where USB devices are read from (`demo.py` points it at a fake tree) |
 | `UART_HOST` | `localhost` | uart MCP: the ser2net host |
 | `UART_BASE_PORT` | `3000` | uart MCP: TCP port for `ttyUSB0` |
 | `UART_COUNT` | `24` | uart MCP: number of UART ports |
@@ -629,7 +630,12 @@ UI runs on a machine with no I²C bus — and a bench with real hardware is neve
 touched.
 
 It also starts 24 simulated TCP UARTs on loopback and points the demo server at
-them, so console tests never connect to the bench's serial devices.
+them, so console tests never connect to the bench's serial devices, a simulated
+backpack (its HTTP API and console), and a fake USB tree with Ingenic bootrom
+and DFU-gadget devices (`RELAY_PANEL_USB_SYS` points the server at it).
+
+Opening the page as `/#console=<n>` (or `#console=all`) opens that console as it
+loads, on the demo and on a real panel alike; the screenshot uses it.
 
 ```bash
 ./demo.py                                    # serve, prints the URL

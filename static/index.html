@@ -3510,7 +3510,7 @@ async function loadUarts() {
   if (uartStartAfterLoad !== null) {
     const index = uartStartAfterLoad;
     uartStartAfterLoad = null;
-    if (uartChoices.some(port => port.index === index)) startUart(index);
+    if (index === 'all' || uartChoices.some(port => port.index === index)) startUart(index);
   }
   return true;
 }
@@ -3622,6 +3622,13 @@ uartSection.addEventListener('toggle', () => {
   if (uartSection.open) loadUarts();
   else { uartListRequest++; stopUart(); }
 });
+// #console=<index|all> opens that console on load: a link straight to a board's output.
+const consoleLink = !uartWindowMode && location.hash.match(/^#console=(all|\d+)$/);
+if (consoleLink) {
+  uartStartAfterLoad = consoleLink[1] === 'all' ? 'all' : Number(consoleLink[1]);
+  uartSection.open = true;
+}
+
 document.getElementById('uartPortSelect').addEventListener('change', event => {
   const value = event.target.value;
   if (value) startUart(value === 'all' ? 'all' : Number(value));
