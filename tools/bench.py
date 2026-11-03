@@ -3,6 +3,7 @@
 
   bench.py list              device names, relays and notes
   bench.py show <device>     one device as JSON, bench defaults filled in
+                             (a backpack device: its unit's dfu address and console name)
   bench.py bench             the bench-wide settings as JSON
   bench.py check             compare the file with the live panel
 
@@ -54,24 +55,41 @@ def relay(r):
     return f"B{r['board']}/{r['relay']}" if r else "-"
 
 
+def panel_get(bench, path):
+    url = bench["panel_url"].rstrip("/") + path
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.load(r)
+    except (OSError, ValueError) as e:
+        sys.exit(f"cannot read {url}: {e}")
+
+
 def cmd_list(bench):
     print(f"{'device':<14} {'power':<7} {'boot':<7} {'uart':<10} notes")
     for name, d in bench["devices"].items():
+        if "backpack" in d:
+            print(f"{name:<14} {'backpack ' + d['backpack']:<26} {d.get('notes', '')}")
+            continue
         print(f"{name:<14} {relay(d.get('power')):<7} {relay(d.get('boot')):<7} "
               f"{str(d.get('uart', '-')):<10} {d.get('notes', '')}")
 
 
 def cmd_check(bench):
-    url = bench["panel_url"].rstrip("/") + "/api/state"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as r:
-            state = json.load(r)
-    except (OSError, ValueError) as e:
-        sys.exit(f"cannot read {url}: {e}")
+    state = panel_get(bench, "/api/state")
     boards = state["boards"]
+    units = state.get("backpacks", [])
     master = bench["master_name_contains"].lower()
     used, bad = {}, 0
     for name, d in bench["devices"].items():
+        if "backpack" in d:
+            unit = find_backpack(units, d["backpack"])
+            if unit is None:
+                print(f"{name}: no backpack {d['backpack']!r} on the panel")
+                bad += 1
+            else:
+                state_text = "online" if unit["online"] else f"OFFLINE ({unit['error']})"
+                print(f"  {name:<14} backpack {unit['name']} #{unit['id']}, {state_text}")
+            continue
         for role in ("power", "boot", "detach"):
             r = d.get(role)
             if not r:
@@ -95,6 +113,10 @@ def cmd_check(bench):
     return 1 if bad else 0
 
 
+def find_backpack(units, ref):
+    return next((u for u in units if str(ref) in (str(u["id"]), u["name"], u.get("mdns") or "", u["host"])), None)
+
+
 def main():
     args = sys.argv[1:]
     bench = load()
@@ -103,7 +125,17 @@ def main():
     elif args[:1] == ["list"]:
         cmd_list(bench)
     elif args[:1] == ["show"] and len(args) == 2:
-        print(json.dumps(device(bench, args[1]), indent=2))
+        dev = device(bench, args[1])
+        if "backpack" in dev:
+            unit = find_backpack(panel_get(bench, "/api/backpacks")["backpacks"], dev["backpack"])
+            if unit is None:
+                sys.exit(f"{args[1]}: no backpack {dev['backpack']!r} on the panel")
+            # The unit is the flashing host and the console, not the Pi.
+            dev.update(backpack_id=unit["id"], backpack_name=unit["name"], online=unit["online"],
+                       dfu_host=unit["dfu"], uart=unit["name"])
+            for key in ("usb_mux", "detach"):
+                dev.pop(key, None)
+        print(json.dumps(dev, indent=2))
     elif args[:1] == ["check"]:
         sys.exit(cmd_check(bench))
     else:

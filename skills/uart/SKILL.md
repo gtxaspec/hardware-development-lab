@@ -28,6 +28,8 @@ Usage:
 after seeing that board's boot banner on the port. `/uart status` lists ports
 and aliases. The log file is named after the port's alias, or ttyUSBN when it
 has none. A bench device's port is its `uart` in `tools/bench.py show <device>`.
+A backpack's console is its name as the panel lists it (`bp:<name>` also
+works); the uart server reaches it through the panel (`RELAY_PANEL_URL`).
 
 ## Log file layout
 
@@ -121,8 +123,10 @@ Steps for `uboot <bench device>`:
    `uart`; without one, find the port first (`tools/uart-listen-all.py`).
 2. `mcp__uart__clear_uart_buffer` device=<uart>
 3. `mcp__relay-panel__set_relay` its `power` relay `off`; wait 2 seconds.
+   (Backpack: skip this; step 4 uses `backpack_action action=power-cycle`.)
 4. Power on AND interrupt boot together, in one message:
-   - `mcp__relay-panel__set_relay` `power` relay `on`
+   - `mcp__relay-panel__set_relay` `power` relay `on` (backpack:
+     `mcp__relay-panel__backpack_action action=power-cycle`)
    - `mcp__uart__uart_interact` device=<uart>, clear=true, timeout=30, script:
      ```json
      [{"send_until": "\\x03", "expect": "\\w+# $|=> $", "interval": 0.1}]

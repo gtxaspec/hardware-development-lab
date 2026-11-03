@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from uart_stream import UartHub, UartNotConnected
+import backpacks
 
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -34,6 +35,12 @@ UART_HOST = os.environ.get("RELAY_PANEL_UART_HOST", "127.0.0.1")
 UART_BASE_PORT = int(os.environ.get("RELAY_PANEL_UART_BASE_PORT", "3000"))
 UART_COUNT = int(os.environ.get("RELAY_PANEL_UART_COUNT", "24"))
 uart_hub = UartHub(UART_HOST, UART_BASE_PORT, UART_COUNT)
+# Backpack consoles join the UART list numbered from here, past the most
+# ser2net ports the hub allows, so neither numbering ever shifts the other
+# and a token's "uarts" grant keeps meaning the same console.
+BACKPACK_UART_BASE = 100
+BACKPACK_DISCOVERY = os.environ.get("RELAY_PANEL_BACKPACK_DISCOVERY", "1") not in ("0", "")
+BACKPACK_DISCOVER_EVERY = 60.0
 UART_HEARTBEAT = 5.0
 UART_INPUT_MAX = 4096      # bytes per request; the browser splits longer pastes
 
@@ -165,6 +172,9 @@ def load_config():
     cfg.setdefault("boards", [])
     cfg.setdefault("gpios", [])
     cfg.setdefault("pwm", [])
+    cfg.setdefault("backpacks", [])
+    # mDNS names of units someone removed, so discovery does not re-add them.
+    cfg.setdefault("backpacks_ignored", [])
     return cfg
 
 
@@ -1149,6 +1159,7 @@ class BenchSampler:
             self.fresh()
             snap, age, covers = self.latest()
         out = dict(snap)
+        out["backpacks"] = backpack_snapshot()
         out["sampled_age_s"] = round(age, 2)
         out["stale"] = age > STALE_AFTER
         # Lets a client tell whether this picture is old enough to predate a
@@ -1184,6 +1195,77 @@ class BenchSampler:
 
 
 sampler = BenchSampler()
+
+
+def backpack_uart(uid):
+    return BACKPACK_UART_BASE + uid
+
+
+def refresh_backpack_consoles():
+    """Point each backpack's console channel at the address its poller reached."""
+    for unit in list(backpack_monitor.units.values()):
+        entry = unit.entry
+        host = unit.address or (entry.get("addresses") or [entry["host"]])[0]
+        name = entry.get("name") or entry.get("mdns") or entry["host"]
+        uart_hub.add_channel(backpack_uart(entry["id"]), host, entry.get("console_port", 3000),
+                             name, yield_on=backpacks.TAKEOVER)
+    live = {backpack_uart(uid) for uid in backpack_monitor.units}
+    for index in [i for i in uart_hub.channels if i >= BACKPACK_UART_BASE and i not in live]:
+        uart_hub.remove_channel(index)
+
+
+backpack_monitor = backpacks.BackpackMonitor(on_change=refresh_backpack_consoles)
+
+
+def backpack_snapshot():
+    return [dict(unit, uart=backpack_uart(unit["id"])) for unit in backpack_monitor.snapshot()]
+
+
+def sync_backpacks(config):
+    backpack_monitor.sync(config["backpacks"])
+    refresh_backpack_consoles()
+
+
+def next_backpack_id(config):
+    # Never reused, so a token granting backpack 3 can never come to mean
+    # a different unit added after 3 was removed.
+    uid = max([config.get("backpack_next_id", 1)] + [b["id"] + 1 for b in config["backpacks"]])
+    config["backpack_next_id"] = uid + 1
+    return uid
+
+
+def discover_backpacks():
+    """Add new units, and follow known ones to new addresses. Returns what answered."""
+    found = backpacks.discover()
+    with config_lock:
+        config = load_config()
+        changed = False
+        for hostname, addresses in found.items():
+            entry = next((b for b in config["backpacks"] if b.get("mdns") == hostname), None)
+            if entry is None:
+                if hostname in config["backpacks_ignored"]:
+                    continue
+                config["backpacks"].append({"id": next_backpack_id(config), "name": hostname,
+                                            "host": addresses[0], "mdns": hostname,
+                                            "addresses": addresses})
+                changed = True
+            elif entry.get("addresses") != addresses:
+                entry["addresses"], entry["host"] = addresses, addresses[0]
+                changed = True
+        if changed:
+            save_config(config)
+    if changed:
+        sync_backpacks(config)
+    return found
+
+
+def discovery_loop():
+    while True:
+        try:
+            discover_backpacks()
+        except Exception as e:
+            print(f"  backpack discovery: {e}")
+        time.sleep(BACKPACK_DISCOVER_EVERY)
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -1314,14 +1396,22 @@ class RelayHandler(BaseHTTPRequestHandler):
             return False
         return allowed is None
 
+    def authorize_backpack(self, uid):
+        ok, allowed = self._token_scope()
+        if not ok:
+            return False
+        if allowed is None:
+            return True
+        return uid in allowed.get("backpacks", [])
+
     def allowed_uarts(self):
         ok, allowed = self._token_scope()
         if not ok:
             return set()
         if allowed is None:
-            return set(range(UART_COUNT))
+            return set(uart_hub.channels)
         return {index for index in allowed.get("uarts", [])
-                if type(index) is int and 0 <= index < UART_COUNT}
+                if type(index) is int and index in uart_hub.channels}
 
     def allowed_uart_input(self):
         """UARTs the caller may type into: a separate grant on top of viewing,
@@ -1330,9 +1420,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not ok:
             return set()
         if allowed is None:
-            return set(range(UART_COUNT))
+            return set(uart_hub.channels)
         return {index for index in allowed.get("uart_input", [])
-                if type(index) is int and 0 <= index < UART_COUNT} & self.allowed_uarts()
+                if type(index) is int and index in uart_hub.channels} & self.allowed_uarts()
 
     def uart_input(self, body):
         # Keystrokes reach a root shell on a bench device, so a cross-site
@@ -1350,7 +1440,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Expected a JSON object"}, 400)
             return
         index, data = body.get("uart"), body.get("data")
-        if type(index) is not int or not 0 <= index < UART_COUNT:
+        if type(index) is not int or index not in uart_hub.channels:
             self.send_json({"error": "Invalid UART"}, 400)
             return
         if not isinstance(data, str) or not data:
@@ -1363,13 +1453,14 @@ class RelayHandler(BaseHTTPRequestHandler):
         if len(raw) > UART_INPUT_MAX:
             self.send_json({"error": f"At most {UART_INPUT_MAX} bytes per request"}, 413)
             return
+        name = uart_hub.channels[index].name
         try:
             uart_hub.write(index, raw)
         except UartNotConnected:
-            self.send_json({"error": f"ttyUSB{index} is not connected; open its console first"}, 409)
+            self.send_json({"error": f"{name} is not connected; open its console first"}, 409)
             return
-        except OSError as error:
-            self.send_json({"error": f"ttyUSB{index} input failed: {error}"}, 503)
+        except (OSError, ValueError) as error:
+            self.send_json({"error": f"{name} input failed: {error}"}, 503)
             return
         self.send_json({"ok": True, "uart": index, "bytes": len(raw)}, changes_bench=False)
 
@@ -1386,7 +1477,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json({"error": "Invalid UART"}, 400)
                 return
-            if not 0 <= index < UART_COUNT:
+            if index not in uart_hub.channels:
                 self.send_json({"error": "Invalid UART"}, 400)
                 return
             if index not in allowed:
@@ -1395,6 +1486,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             indices = {index}
         try:
             subscription = uart_hub.subscribe(indices)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, 400)
+            return
         except RuntimeError as error:
             self.send_json({"error": str(error)}, 503)
             return
@@ -1440,19 +1534,149 @@ class RelayHandler(BaseHTTPRequestHandler):
         finally:
             uart_hub.unsubscribe(subscription)
 
+    def backpack_body_id(self, body):
+        uid = body.get("id") if isinstance(body, dict) else None
+        if type(uid) is not int or backpack_monitor.unit(uid) is None:
+            self.send_json({"error": "Unknown backpack"}, 400)
+            return None
+        if not self.authorize_backpack(uid):
+            self.forbidden()
+            return None
+        return uid
+
+    def backpack_post(self, path, body):
+        """Backpack routes for POST; returns False when the path is not one."""
+        if path == "/api/backpack/action":
+            uid = self.backpack_body_id(body)
+            if uid is None:
+                return True
+            action = body.get("action")
+            if action not in backpacks.ACTIONS:
+                self.send_json({"error": f"action must be one of {', '.join(backpacks.ACTIONS)}"}, 400)
+                return True
+            status, answer = backpack_monitor.call(uid, f"action={action}")
+            self.send_json(answer, status)
+            return True
+        if path == "/api/backpack/setting":
+            uid = self.backpack_body_id(body)
+            if uid is None:
+                return True
+            settings = [(k, body[k]) for k in backpacks.SETTINGS if k in body]
+            if len(settings) != 1 or settings[0][1] not in backpacks.SETTINGS[settings[0][0]]:
+                self.send_json({"error": "set one of: bootsel=low|high, usb_port=on|off"}, 400)
+                return True
+            status, answer = backpack_monitor.call(uid, f"{settings[0][0]}={settings[0][1]}")
+            self.send_json(answer, status)
+            return True
+        if path == "/api/backpacks/discover":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return True
+            try:
+                found = discover_backpacks()
+            except OSError as e:
+                self.send_json({"error": f"mDNS: {e}"}, 503)
+                return True
+            self.send_json({"ok": True, "found": found})
+            return True
+        if path == "/api/backpacks":
+            if not self.authorize_owner_only():
+                self.forbidden()
+                return True
+            host = str(body.get("host", "")).strip()
+            if not host or any(c in host for c in "/?#@ ") :
+                self.send_json({"error": "host is required: an address or hostname"}, 400)
+                return True
+            with config_lock:
+                config = load_config()
+                entry = {"id": next_backpack_id(config), "name": str(body.get("name") or host)[:64],
+                         "host": host}
+                for key in ("http_port", "console_port", "dfu_port"):
+                    if key in body:
+                        try:
+                            port = int(body[key])
+                        except (TypeError, ValueError):
+                            port = 0
+                        if not 1 <= port <= 65535:
+                            self.send_json({"error": f"{key} must be 1-65535"}, 400)
+                            return True
+                        entry[key] = port
+                config["backpacks"].append(entry)
+                save_config(config)
+            sync_backpacks(config)
+            self.send_json({"ok": True, "id": entry["id"]})
+            return True
+        return False
+
+    def backpack_put(self, path, body):
+        if path != "/api/backpack/name":
+            return False
+        uid = self.backpack_body_id(body)
+        if uid is None:
+            return True
+        name = str(body.get("name", "")).strip()[:64]
+        if not name:
+            self.send_json({"error": "name is required"}, 400)
+            return True
+        with config_lock:
+            config = load_config()
+            for entry in config["backpacks"]:
+                if entry["id"] == uid:
+                    entry["name"] = name
+            save_config(config)
+        sync_backpacks(config)
+        self.send_json({"ok": True})
+        return True
+
+    def backpack_delete(self, path):
+        if not path.startswith("/api/backpacks/"):
+            return False
+        try:
+            uid = int(path.rsplit("/", 1)[-1])
+        except ValueError:
+            self.send_json({"error": "Invalid backpack id"}, 400)
+            return True
+        with config_lock:
+            config = load_config()
+            entry = next((b for b in config["backpacks"] if b["id"] == uid), None)
+            if entry is None:
+                self.send_json({"error": "Unknown backpack"}, 400)
+                return True
+            config["backpacks"].remove(entry)
+            # Ids are never handed out again, even if this was the highest.
+            config["backpack_next_id"] = max(config.get("backpack_next_id", 1), uid + 1)
+            if entry.get("mdns") and entry["mdns"] not in config["backpacks_ignored"]:
+                config["backpacks_ignored"].append(entry["mdns"])
+            save_config(config)
+        sync_backpacks(config)
+        self.send_json({"ok": True})
+        return True
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
         if path == "/api/uarts":
             allowed = self.allowed_uarts()
-            if not allowed and UART_COUNT:
+            if not allowed and uart_hub.channels:
                 self.forbidden()
                 return
             writable = self.allowed_uart_input()
-            self.send_json({"uarts": [{"index": index, "name": f"ttyUSB{index}",
-                                      "port": UART_BASE_PORT + index, "input": index in writable}
-                                     for index in sorted(allowed)], "read_only": not writable})
+            uarts = []
+            for index in sorted(allowed):
+                channel = uart_hub.channels.get(index)
+                if channel is None:
+                    continue
+                entry = {"index": index, "name": channel.name, "port": channel.port,
+                         "input": index in writable}
+                if index >= BACKPACK_UART_BASE:
+                    entry["backpack"] = index - BACKPACK_UART_BASE
+                uarts.append(entry)
+            self.send_json({"uarts": uarts, "read_only": not writable})
+            return
+
+        if path == "/api/backpacks":
+            self.send_json({"backpacks": backpack_snapshot()})
             return
 
         if path == "/api/uart/stream":
@@ -1526,6 +1750,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         if path == "/api/uart/input":
             self.uart_input(body)
+            return
+
+        if self.backpack_post(path, body):
             return
 
         if path == "/api/relay/toggle":
@@ -2022,6 +2249,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         body = self.read_body()
+        if self.backpack_put(path, body):
+            return
 
         if path == "/api/relay/name":
             board_idx = body.get("board", 0)
@@ -2370,6 +2599,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.forbidden()
             return
 
+        if self.backpack_delete(path):
+            return
+
         if path.startswith("/api/boards/"):
             try:
                 board_idx = int(path.split("/")[-1])
@@ -2558,6 +2790,10 @@ def main():
     print("Starting bench sampler...")
     sampler.fresh()          # serve a real reading from the first request on
     sampler.start()
+
+    sync_backpacks(config)
+    if BACKPACK_DISCOVERY:
+        threading.Thread(target=discovery_loop, name="backpack-discovery", daemon=True).start()
 
     # An explicitly IPv4 RELAY_PANEL_HOST still gets a plain v4 socket.
     server_cls = DualStackHTTPServer if ":" in LISTEN_HOST else ThreadingHTTPServer

@@ -29,6 +29,10 @@ It prints `power` and `boot` (`board`/`relay`), optional `usb_mux`, `detach`
 and `uart`, plus `settle_secs`, `enumerate_timeout_secs`, `bootrom_vid_pid`,
 `dfu_host` and `notes`. Read the notes. Unknown device: `bench.py list`.
 
+A device with `backpack` set is on a thingino backpack instead of relays: its
+`dfu_host` is the unit itself and its `uart` is the unit's console name. Use
+"Enter the bootrom: backpack" below; everything after that is the same.
+
 Never switch a relay whose panel name contains `master_name_contains`: those
 are the bench rails. Only the device's own relays move.
 
@@ -46,6 +50,14 @@ are the bench rails. Only the device's own relays move.
 7. Release the boot pin: `set_relay <boot> off`. Required before any write:
    while held it can short a flash pin and every write fails.
 
+## Enter the bootrom: backpack
+
+1. `/uart fresh <uart> pre-flash`.
+2. `mcp__relay-panel__backpack_action backpack=<backpack> action=bootrom`. The
+   unit holds the boot pin, power-cycles, and releases the pin the moment the
+   bootrom enumerates; no relays, no `usb_wait` (the Pi does not see this USB).
+   `ok: false` means nothing enumerated within 10 s: see the failures below.
+
 ## Write
 
 ```bash
@@ -61,7 +73,8 @@ Cloner instead: `thingino-dfu --host <dfu_host> --cloner -w <firmware_file> --cp
 ## Cold boot
 
 After a DFU write the device sits in DFU mode. Power-cycle it (boot pin is
-already off): `set_relay <power> off`, then `on`. If it has `detach`, close
+already off): `set_relay <power> off`, then `on`; on a backpack,
+`backpack_action action=power-cycle`. If it has `detach`, close
 that relay again once the device is up. Report the thingino-dfu result and,
 if it has `uart`, the boot banner from `mcp__uart__get_uart_log device=<uart> lines=40`.
 
@@ -71,7 +84,8 @@ if it has `uart`, the boot banner from `mcp__uart__get_uart_log device=<uart> li
   there (`systemctl restart dfu-remote` if installed as a unit, else
   `/deploy-dfu`). Do not stop it as a cleanup step; it is meant to stay up.
 - No bootrom within the timeout: check the `usb_mux` GPIO state and that the
-  boot pin relay is wired; cycle once more.
+  boot pin relay is wired; cycle once more. On a backpack, `list_backpacks`
+  shows its `usb_port` (must be `on`) and whether it is online.
 - DFU gadget never appears after bootstrap: usually DDR init failing in SPL.
   Show the UART log and offer the cloner.
 - Nothing on the UART after cold boot: the new image did not run.

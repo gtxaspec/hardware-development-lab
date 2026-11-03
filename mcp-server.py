@@ -26,14 +26,18 @@ mcp = MCPServer(
         "into named groups driven by one master level. "
         "Connected Ingenic USB devices (bootrom / DFU gadget) are also exposed "
         "read-only, showing which bench devices are in a flashable state. "
+        "Backpacks are ESP32 units that each own one camera: its power, boot pin, "
+        "USB port and console. list_backpacks shows them; backpack_action powers, "
+        "power-cycles or puts the camera into its bootrom, and the unit's dfu "
+        "address is what thingino-dfu --host flashes it through. "
         "Adding, removing and re-addressing boards and PWM chips is deliberately "
         "not exposed here - that is physical setup, done in the web UI."
     ),
 )
 
 
-def api(method: str, path: str, body: dict | None = None) -> dict:
-    with httpx.Client(base_url=BASE_URL, timeout=10) as client:
+def api(method: str, path: str, body: dict | None = None, timeout: float = 10) -> dict:
+    with httpx.Client(base_url=BASE_URL, timeout=timeout) as client:
         if method == "GET":
             r = client.get(path)
         elif method == "POST":
@@ -498,6 +502,68 @@ def rename_led_channel(chip: int, channel: int, name: str) -> dict:
         "channel": channel,
         "name": name,
     })
+
+
+
+def _backpack_id(backpack: str | int) -> int | dict:
+    """Accept a backpack's id, its name or its mDNS hostname."""
+    units = api("GET", "/api/backpacks").get("backpacks", [])
+    for unit in units:
+        if str(backpack) in (str(unit["id"]), unit["name"], unit.get("mdns") or "", unit["host"]):
+            return unit["id"]
+    return {"error": f"no backpack {backpack!r}; known: {[u['name'] for u in units]}"}
+
+
+@mcp.tool()
+def list_backpacks() -> dict:
+    """List the thingino backpacks: ESP32 units that each control one camera.
+
+    Each has an id, name, host, online/stale flags, firmware version, the
+    camera's power ('on'/'off') and boot pin ('held'/'released'), the USB
+    devices enumerated on its port as VID:PID (a108:c309 = bootrom, a108:4d44 =
+    DFU gadget), `dfu` (the host:port to pass to thingino-dfu --host) and
+    `uart` (its console's index in the uart list).
+    """
+    return api("GET", "/api/backpacks")
+
+
+@mcp.tool()
+def backpack_action(backpack: str, action: str) -> dict:
+    """Operate a backpack's camera.
+
+    Actions: power-on, power-off, power-cycle, boot-hold, boot-release, and
+    bootrom: hold the boot pin, power-cycle, and release the pin as soon as the
+    bootrom enumerates (fails after ~10 s if nothing does). After bootrom,
+    flash with `thingino-dfu --host <dfu> -w image.bin` using list_backpacks'
+    `dfu` address; no USB wait is needed, the unit already saw the bootrom.
+
+    Args:
+        backpack: The backpack's id, name or mDNS hostname
+        action: One of the actions above
+    """
+    uid = _backpack_id(backpack)
+    if isinstance(uid, dict):
+        return uid
+    return api("POST", "/api/backpack/action", {"id": uid, "action": action}, timeout=40)
+
+
+@mcp.tool()
+def backpack_setting(backpack: str, setting: str, value: str) -> dict:
+    """Change a backpack setting, saved on the unit.
+
+    bootsel = low | high: how the SoC's BOOTSEL line asks for USB boot.
+    usb_port = on | off: off takes the backpack off the camera's USB lines
+    (for cameras whose Wi-Fi module shares them); bootrom is refused while off.
+
+    Args:
+        backpack: The backpack's id, name or mDNS hostname
+        setting: bootsel or usb_port
+        value: The new value
+    """
+    uid = _backpack_id(backpack)
+    if isinstance(uid, dict):
+        return uid
+    return api("POST", "/api/backpack/setting", {"id": uid, setting: value}, timeout=20)
 
 
 if __name__ == "__main__":

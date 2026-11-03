@@ -11,6 +11,8 @@ ser2net on the bench controller maps ttyUSB ports to TCP:
 
 import json
 import os
+import urllib.error
+import urllib.request
 import re
 import socket
 import threading
@@ -21,6 +23,10 @@ UART_HOST = os.environ.get("UART_HOST", "localhost")
 UART_BASE_PORT = int(os.environ.get("UART_BASE_PORT", "3000"))
 UART_COUNT = int(os.environ.get("UART_COUNT", "24"))
 LOG_DIR = "/tmp/uart-logs"
+# Optional. With it, backpack consoles are reachable by name, through the
+# panel: a backpack serves one console client at a time, so connecting to it
+# directly would keep taking the console from the panel and back.
+PANEL_URL = os.environ.get("RELAY_PANEL_URL", "").rstrip("/")
 ALIASES_FILE = os.environ.get(
     "UART_ALIASES", os.path.join(os.path.dirname(os.path.abspath(__file__)), "aliases.json"))
 
@@ -65,6 +71,35 @@ def _parse_index(ref) -> int | None:
     return None
 
 
+_panel_cache = {"at": 0.0, "consoles": []}
+
+
+def _panel_consoles() -> list:
+    """Backpack consoles the panel lists, cached briefly."""
+    if not PANEL_URL:
+        return []
+    if time.monotonic() - _panel_cache["at"] > 10:
+        try:
+            with urllib.request.urlopen(f"{PANEL_URL}/api/uarts", timeout=5) as r:
+                uarts = json.load(r).get("uarts", [])
+            _panel_cache["consoles"] = [u for u in uarts if "backpack" in u]
+            _panel_cache["at"] = time.monotonic()
+        except (OSError, ValueError):
+            pass
+    return _panel_cache["consoles"]
+
+
+def _panel_console(name: str) -> dict | None:
+    """Match a backpack console by its name, 'bp:<name>' or its panel index."""
+    name = name.removeprefix("bp:")
+    for u in _panel_consoles():
+        if name in (u["name"].lower(), str(u["index"])):
+            label = re.sub(r"[^A-Za-z0-9._-]+", "_", u["name"]).strip("_") or f"panel{u['index']}"
+            return {"key": f"panel:{u['index']}", "label": label, "panel": u["index"],
+                    "uart": f"{u['name']} (via panel)"}
+    return None
+
+
 def _resolve(ref: str) -> dict:
     """Map a device reference to {key, label, host, port, uart}.
 
@@ -78,6 +113,10 @@ def _resolve(ref: str) -> dict:
         return {"key": name, "label": name, "host": target.get("host", UART_HOST),
                 "port": int(target["port"]), "uart": target.get("uart", f"tcp:{target['port']}")}
     idx = _parse_index(target)
+    if idx is None and name not in aliases:
+        panel = _panel_console(name)
+        if panel:
+            return panel
     if idx is None:
         if name in aliases:
             raise ValueError(f"alias '{name}' points at '{target}', not a port 0-{UART_COUNT - 1}")
@@ -264,6 +303,86 @@ class DeviceConnection:
             self.sock = None
 
 
+class PanelConnection(DeviceConnection):
+    """A console read through the panel's stream and typed into through its
+    input endpoint, with the same buffer, log and wait_for as a raw socket."""
+
+    def __init__(self, index: int):
+        super().__init__(PANEL_URL, index)
+        self.index = index
+        self._ready = threading.Event()
+
+    def connect(self):
+        if self.alive:
+            return
+        self._ready.clear()
+        url = f"{PANEL_URL}/api/uart/stream?uart={self.index}"
+        try:
+            self.sock = urllib.request.urlopen(url, timeout=15)
+        except urllib.error.HTTPError as e:
+            raise ConnectionError(f"panel refused console {self.index}: {e.read().decode(errors='replace')}")
+        self.running = True
+        with self.lock:
+            self.buffer = b""
+        threading.Thread(target=self._reader, daemon=True).start()
+        # The panel takes input only once its upstream is connected.
+        if not self._ready.wait(8):
+            raise ConnectionError(f"panel console {self.index} did not connect")
+
+    def _feed(self, data: bytes):
+        with self.lock:
+            self.buffer += data
+            if len(self.buffer) > MAX_BUFFER:
+                self.buffer = self.buffer[-TRIM_TO:]
+        with self._log_lock:
+            if self._log_fh:
+                self._log_fh.write(data.decode("utf-8", errors="replace"))
+                self._log_fh.flush()
+
+    def _reader(self):
+        event = None
+        try:
+            for raw in self.sock:
+                line = raw.decode("utf-8", errors="replace").rstrip("\n")
+                if line.startswith("event: "):
+                    event = line[7:]
+                elif line.startswith("data: ") and event:
+                    data = json.loads(line[6:])
+                    if event == "output":
+                        self._feed(data.get("text", "").encode())
+                    elif event == "status":
+                        if data.get("status") == "connected":
+                            self._ready.set()
+                        elif data.get("status") == "taken_over":
+                            self._feed(b"\r\n[panel: console taken over by another client]\r\n")
+                    elif event in ("denied", "gap"):
+                        break
+        except (OSError, ValueError):
+            pass
+        self.running = False
+
+    def write(self, data: bytes):
+        if not self.alive:
+            self.connect()
+        body = json.dumps({"uart": self.index, "data": data.decode("utf-8", errors="replace")}).encode()
+        request = urllib.request.Request(f"{PANEL_URL}/api/uart/input", data=body, method="POST",
+                                         headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(request, timeout=10).read()
+        except urllib.error.HTTPError as e:
+            raise ConnectionError(json.loads(e.read() or b"{}").get("error", f"HTTP {e.code}"))
+
+    def close(self):
+        self.running = False
+        self.stop_log()
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+
 _connections: dict[str, DeviceConnection] = {}
 
 
@@ -274,7 +393,7 @@ def _get_conn(dev: dict) -> DeviceConnection:
         return conn
     if conn:
         conn.close()
-    conn = DeviceConnection(dev["host"], dev["port"])
+    conn = PanelConnection(dev["panel"]) if "panel" in dev else DeviceConnection(dev["host"], dev["port"])
     conn.connect()
     _connections[dev["key"]] = conn
     return conn
@@ -714,6 +833,12 @@ def list_uart_devices() -> str:
                     f"{target.get('host', UART_HOST):<20} {status(name)}\n")
         else:
             out += f"{name:<10} {'?':<6} {'BAD TARGET ' + str(target):<20}\n"
+    consoles = _panel_consoles()
+    if consoles:
+        out += f"\nBackpack consoles, through the panel at {PANEL_URL} (use the name):\n"
+        for u in consoles:
+            key = f"panel:{u['index']}"
+            out += f"  {u['name']:<28} #{u['index']:<5} {status(key)}\n"
     return out
 
 

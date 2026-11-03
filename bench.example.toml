@@ -66,3 +66,10 @@ detach = { board = 2, relay = 1 }
 # Per-device overrides of the bench-wide values above.
 enumerate_timeout_secs = 120
 settle_secs = 4
+
+[devices.example_c]
+# A camera on a thingino backpack: name the backpack (as the panel lists it,
+# or its mDNS hostname) instead of power and boot relays. The backpack owns
+# the power, the boot pin, the USB port and the console, so `usb_mux`,
+# `detach` and `uart` do not apply; its console is reached by the same name.
+backpack = "thingino-backpack-1a2b"

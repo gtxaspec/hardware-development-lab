@@ -12,7 +12,8 @@ Usage: `/poweroff <device>` or `/poweroff all`
    at `<repo>/skills/poweroff/`; resolve symlinks with `readlink -f`). For
    `all`, take every name from `bench.py list`.
 2. In parallel: `mcp__relay-panel__set_relay` its `power` relay `off` and its
-   `boot` relay `off`.
+   `boot` relay `off`. A device with `backpack` set instead:
+   `mcp__relay-panel__backpack_action` `power-off`, then `boot-release`.
 3. Report what was switched.
 
 Relays only. Never switch a relay whose panel name contains

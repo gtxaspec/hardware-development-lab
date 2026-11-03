@@ -36,6 +36,7 @@ SERVICE = "relay-panel.service"
 # index.html is read from disk per request, so it never does.
 FILES = [
     ("uart_stream.py", f"{REMOTE_DIR}/uart_stream.py", True),
+    ("backpacks.py", f"{REMOTE_DIR}/backpacks.py", True),
     ("relay-panel.py", f"{REMOTE_DIR}/relay-panel.py", True),
     ("static/index.html", f"{REMOTE_DIR}/static/index.html", False),
     ("relay-panel.service", f"/etc/systemd/system/{SERVICE}", True),

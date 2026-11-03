@@ -30,6 +30,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 REPO = pathlib.Path(__file__).resolve().parent
 
@@ -202,13 +204,18 @@ def find_chrome(explicit):
     return None
 
 
-def build_sandbox(tmp):
+def build_sandbox(tmp, backpack=None):
     """Lay out the stub PATH, static files and demo config."""
     binp, panel = tmp / "bin", tmp / "panel"
     (panel / "static").mkdir(parents=True)
     binp.mkdir()
     shutil.copy(REPO / "static" / "index.html", panel / "static" / "index.html")
-    (panel / "config.json").write_text(json.dumps(DEMO_CONFIG, indent=2))
+    config = dict(DEMO_CONFIG)
+    if backpack is not None:
+        config["backpacks"] = [{"id": 1, "name": "T31 on backpack", "host": "127.0.0.1",
+                                "mdns": backpack.name, "http_port": backpack.http_port,
+                                "console_port": backpack.console_port}]
+    (panel / "config.json").write_text(json.dumps(config, indent=2))
     stub = binp / "_stub.py"
     stub.write_text(STUB)
     stub.chmod(0o755)
@@ -224,6 +231,131 @@ def seed(port):
             {"board": board, "relay": relay, "state": True})
     api(port, "POST", "/api/pwm/set", {"chip": 0, "channel": 0, "level": DEMO_WHITE})
     api(port, "POST", "/api/pwm/group", {"chip": 0, "group": 0, "level": DEMO_GROUP})
+
+
+class FakeBackpack:
+    """A thingino backpack's HTTP API and console, on local ports.
+
+    Mirrors the unit's answers: /api/camera and its actions, /api/ota, and a
+    raw console that serves one client and tells the old one who took over.
+    """
+
+    def __init__(self, name="thingino-backpack-demo"):
+        self.name = name
+        self.state = {"power": "on", "boot_pin": "released", "usb": [],
+                      "bootsel": "low", "usb_port": "on"}
+        self.lock = threading.Lock()
+        self.client = None
+        self.stop = threading.Event()
+        backpack = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def reply(self, body, status=200):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                path = urlparse(self.path).path
+                if path == "/api/camera":
+                    self.reply(backpack.camera())
+                elif path == "/api/ota":
+                    self.reply({"version": "demo-0.2.0", "slot": "ota_0", "state": "valid"})
+                else:
+                    self.reply({"ok": False, "error": "not found"}, 404)
+
+            def do_POST(self):
+                url = urlparse(self.path)
+                query = {k: v[0] for k, v in parse_qs(url.query).items()}
+                if url.path != "/api/camera":
+                    self.reply({"ok": False, "error": "not found"}, 404)
+                    return
+                ok, message = backpack.act(query)
+                self.reply({"ok": True, "message": message} if ok else {"ok": False, "error": message},
+                           200 if ok else 400)
+
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.http_port = self.http.server_address[1]
+        self.console = socket.socket()
+        self.console.bind(("127.0.0.1", 0))
+        self.console.listen(4)
+        self.console_port = self.console.getsockname()[1]
+        for target in (self.http.serve_forever, self._accept, self._chatter):
+            threading.Thread(target=target, daemon=True).start()
+
+    def camera(self):
+        with self.lock:
+            s = dict(self.state)
+        return {"power": s["power"], "boot_pin": s["boot_pin"], "usb_devices": len(s["usb"]),
+                "usb": list(s["usb"]), "stuck_s": None, "recoveries": 0, "flash_lent": False,
+                "bootsel": s["bootsel"], "usb_port": s["usb_port"]}
+
+    def act(self, query):
+        with self.lock:
+            s = self.state
+            if "bootsel" in query:
+                s["bootsel"] = query["bootsel"]
+                return True, f"BOOTSEL {query['bootsel']}"
+            if "usb_port" in query:
+                s["usb_port"] = query["usb_port"]
+                return True, f"USB port {query['usb_port']}"
+            action = query.get("action")
+            if action == "power-on":
+                s["power"], s["usb"] = "on", []
+            elif action == "power-off":
+                s["power"], s["usb"] = "off", []
+            elif action == "power-cycle":
+                s["power"], s["usb"] = "on", []
+            elif action == "bootrom":
+                s["power"], s["boot_pin"], s["usb"] = "on", "released", ["a108:c309"]
+            elif action == "boot-hold":
+                s["boot_pin"] = "held"
+            elif action == "boot-release":
+                s["boot_pin"] = "released"
+            else:
+                return False, "unknown action"
+            return True, action
+        
+    def _accept(self):
+        while not self.stop.is_set():
+            try:
+                client, peer = self.console.accept()
+            except OSError:
+                return
+            with self.lock:
+                old, self.client = self.client, client
+            if old is not None:
+                try:
+                    old.sendall(f"\r\n[console taken over by {peer[0]}]\r\n".encode())
+                    old.close()
+                except OSError:
+                    pass
+
+    def _chatter(self):
+        n = 0
+        while not self.stop.wait(1.0):
+            n += 1
+            with self.lock:
+                client, power = self.client, self.state["power"]
+            if client is None or power != "on":
+                continue
+            try:
+                client.sendall(f"{self.name}: camera console line {n}\r\n".encode())
+            except OSError:
+                with self.lock:
+                    if self.client is client:
+                        self.client = None
+
+    def close(self):
+        self.stop.set()
+        self.http.shutdown()
+        self.console.close()
 
 
 class DemoUarts:
@@ -368,7 +500,8 @@ def main():
 
     port = args.port or free_port()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="relay-panel-demo-"))
-    binp, panel = build_sandbox(tmp)
+    backpack = FakeBackpack()
+    binp, panel = build_sandbox(tmp, backpack)
     uarts = DemoUarts()
 
     env = dict(os.environ)
@@ -378,6 +511,7 @@ def main():
     env["RELAY_PANEL_PORT"] = str(port)
     env["RELAY_PANEL_HOST"] = "127.0.0.1"
     env["RELAY_PANEL_UART_HOST"] = "127.0.0.1"
+    env["RELAY_PANEL_BACKPACK_DISCOVERY"] = "0"
     env["RELAY_PANEL_UART_BASE_PORT"] = str(uarts.base_port)
     env["RELAY_PANEL_UART_COUNT"] = "24"
     if args.usb_vid:
@@ -436,6 +570,7 @@ def main():
         return 0
     finally:
         uarts.close()
+        backpack.close()
         proc.terminate()
         try:
             proc.wait(timeout=5)

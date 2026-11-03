@@ -232,7 +232,9 @@ class StartupTests(unittest.TestCase):
             before = json.dumps(config, indent=2) if config is not None else None
             if before is not None:
                 path.write_text(before)
-            expected = config if config is not None else {"boards": [], "gpios": [], "pwm": []}
+            # load_config fills in the backpack lists in memory; the file is left alone.
+            expected = dict(config if config is not None else {"boards": [], "gpios": [], "pwm": []},
+                            backpacks=[], backpacks_ignored=[])
             with contextlib.ExitStack() as stack:
                 stack.enter_context(patch.object(rp, "CONFIG_FILE", path))
                 stack.enter_context(patch.object(rp, "LISTEN_HOST", "127.0.0.1"))
@@ -240,6 +242,7 @@ class StartupTests(unittest.TestCase):
                 initializers = [stack.enter_context(patch.object(rp, name))
                                 for name in ("init_boards", "init_gpios", "init_pwm")]
                 stack.enter_context(patch.object(rp, "sampler"))
+                stack.enter_context(patch.object(rp, "BACKPACK_DISCOVERY", False))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 rp.main()
             for initializer in initializers:
@@ -247,7 +250,7 @@ class StartupTests(unittest.TestCase):
             if before is not None:
                 self.assertEqual(path.read_text(), before)
             elif path.exists():
-                self.assertEqual(json.loads(path.read_text()), expected)
+                self.assertEqual(json.loads(path.read_text()), {"boards": [], "gpios": [], "pwm": []})
 
 
 class DemoTests(unittest.TestCase):

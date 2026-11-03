@@ -170,6 +170,7 @@ Before exposing the panel beyond your own network, read [Access](#access).
 ```
 relay-panel.py       the server: HTTP API + hardware access. Pure stdlib.
 uart_stream.py       on-demand TCP console fan-out and input
+backpacks.py         thingino backpacks: polling, actions, mDNS discovery
 static/index.html    the whole web UI, single file, no build step
 mcp-server.py        MCP server exposing the API as tools (30 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
@@ -188,6 +189,7 @@ test-concurrency.py  bus priority and sampler tests, no hardware
 test-regressions.py  file serving, relay races, sample ordering, startup and demo tests
 test-ui-reliability.js browser regressions; starts its own simulated panel
 test-uart.py         UART fan-out, reconnect, cleanup and access-control tests
+test-backpacks.py    backpack polling, actions, access, discovery, console takeover
 test-uart-ui.js      browser console tests; starts simulated UARTs via demo.py
 test-hardware.py     hardware tests, drives the real PCA9685
 relay-panel.service  systemd unit
@@ -250,7 +252,7 @@ boards' jumpers are set to. Nothing in this repo assumes a particular layout.
 ```bash
 PI=root@your-pi
 ssh $PI 'mkdir -p /opt/relay-panel/static'
-scp relay-panel.py uart_stream.py $PI:/opt/relay-panel/
+scp relay-panel.py uart_stream.py backpacks.py $PI:/opt/relay-panel/
 scp static/index.html $PI:/opt/relay-panel/static/
 scp relay-panel.service $PI:/etc/systemd/system/
 ssh $PI 'systemctl daemon-reload && systemctl enable --now relay-panel'
@@ -366,7 +368,8 @@ All optional; the defaults suit a normal install.
 | `RELAY_PANEL_UART_BASE_PORT` | `3000` | server: TCP port for `ttyUSB0`; each subsequent UART adds one |
 | `RELAY_PANEL_UART_COUNT` | `24` | server: UART count, 0–64; `0` disables UART access |
 | `RELAY_PANEL_TRUSTED` | loopback + private ranges | server: networks with full access and no token; see [Access](#access) |
-| `RELAY_PANEL_URL` | `http://localhost:8080` | MCP server: where the panel is |
+| `RELAY_PANEL_URL` | `http://localhost:8080` | MCP servers: where the panel is (the uart server needs it for backpack consoles) |
+| `RELAY_PANEL_BACKPACK_DISCOVERY` | `1` | server: `0` stops looking for backpacks over mDNS |
 | `UART_HOST` | `localhost` | uart MCP: the ser2net host |
 | `UART_BASE_PORT` | `3000` | uart MCP: TCP port for `ttyUSB0` |
 | `UART_COUNT` | `24` | uart MCP: number of UART ports |
@@ -379,6 +382,33 @@ All optional; the defaults suit a normal install.
 
 `config.json`, optional `tokens.json`, and `.env` hold site-specific settings and are
 gitignored — nothing in version control names a particular machine.
+
+## Backpacks
+
+A [thingino backpack](https://github.com/thingino/thingino-backpack) is an
+ESP32 strapped to one camera: it switches the camera's power, holds its boot
+pin, hosts its USB port (and runs the flashing daemon on it), and serves its
+console. The panel shows each one as a card: online state and firmware, power
+and boot-pin switches, **Enter bootrom** (hold the pin, power-cycle, release
+once the bootrom enumerates), **Power cycle**, the USB devices on its port, and
+**Console**, which opens the unit's console in the console section.
+
+- **Found automatically.** The panel asks the network for `_thingino._tcp`
+  every minute and adds every `thingino-backpack-*` host that answers, and
+  follows a unit to a new address. A unit you remove stays removed. In edit
+  mode, **+ Backpack** adds one by address (for a unit on another network) and
+  **Discover** looks now. Discovery is mDNS, so it only sees the Pi's own
+  network segments.
+- **Everything goes through the panel.** Browsers, the MCP servers and the
+  skills never talk to a unit directly, so tokens apply (grant `"backpacks":
+  [id, ...]`) and the unit's one-client console is held once and shared. A
+  unit's console is numbered 100 + its id in the console list; if another
+  client takes it over, the panel lets go and waits to be asked again rather
+  than taking it back.
+- **Flashing** goes straight to the unit: its card shows the `dfu` address for
+  `thingino-dfu --host`.
+- In `bench.toml`, a device with `backpack = "<name>"` replaces its power and
+  boot relays; the skills then use the unit's `bootrom` action and DFU address.
 
 ## Access
 
@@ -395,6 +425,10 @@ To give an outside collaborator access over a VPN, narrow
 `RELAY_PANEL_TRUSTED` to your own ranges first (a systemd drop-in with
 `Environment=RELAY_PANEL_TRUSTED=...`), otherwise their VPN addresses may
 already count as trusted.
+
+Backpacks have no authentication of their own: the panel's `backpacks`
+token grant covers them only for clients that go through the panel. Anyone who
+reaches a unit directly can drive it.
 
 Two things bypass the panel entirely: ser2net's TCP ports have no
 authentication, and the usb-hotplug server uses root ssh. Firewall the Pi's
@@ -606,6 +640,7 @@ python3 test-concurrency.py                      # bus priority and sampler chec
 python3 test-regressions.py                      # file serving, relay races, sample ordering, startup and demo
 node test-ui-reliability.js                      # Playwright, automatically starts demo.py
 python3 test-uart.py                             # local TCP fixtures, no hardware
+python3 test-backpacks.py                        # a simulated backpack, no hardware
 node test-uart-ui.js                             # Playwright, simulated consoles only
 ssh root@your-pi python3 - < test-hardware.py    # 63 checks, drives the real chip
 ```
@@ -688,7 +723,8 @@ bun install --cwd mcp/usb-hotplug
   "uart": {
     "command": "/path/to/relay-panel/.venv/bin/python",
     "args": ["/path/to/relay-panel/mcp/uart/uart_server.py"],
-    "env": {"UART_HOST": "your-pi", "UART_BASE_PORT": "3000", "UART_COUNT": "24"}},
+    "env": {"UART_HOST": "your-pi", "UART_BASE_PORT": "3000", "UART_COUNT": "24",
+            "RELAY_PANEL_URL": "http://your-pi:8080"}},
   "usb-hotplug": {
     "command": "bun",
     "args": ["run", "/path/to/relay-panel/mcp/usb-hotplug/server.ts"],

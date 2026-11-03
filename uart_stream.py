@@ -27,9 +27,15 @@ class UartSubscription:
 
 
 class UartChannel:
-    def __init__(self, host, port, index, retry_delay=2.0):
+    def __init__(self, host, port, index, retry_delay=2.0, name=None, yield_on=None):
         self.host, self.port, self.index = host, port, index
+        self.name = name or f"ttyUSB{index}"
         self.retry_delay = retry_delay
+        # A console that serves one client at a time (a backpack) announces a
+        # takeover with this text before hanging up. Reconnecting would just
+        # take it back, so the channel stays down until a new viewer asks.
+        self.yield_on = yield_on
+        self._yielded = False
         self._cv = threading.Condition()
         # Held across every send and while the reader drops the socket, so a
         # write can never land on a descriptor number the kernel has reused.
@@ -43,6 +49,7 @@ class UartChannel:
     def add(self, subscription):
         with self._cv:
             self._listeners.add(subscription)
+            self._yielded = False
             subscription.publish("status", dict(self._status))
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run,
@@ -57,7 +64,7 @@ class UartChannel:
 
     def _active(self):
         with self._cv:
-            return bool(self._listeners) and not self._closed
+            return bool(self._listeners) and not self._closed and not self._yielded
 
     def _publish(self, event, **data):
         payload = {"uart": self.index, **data}
@@ -70,8 +77,9 @@ class UartChannel:
     def _run(self):
         while True:
             with self._cv:
-                while not self._listeners and not self._closed:
-                    self._status = {"uart": self.index, "status": "connecting"}
+                while (not self._listeners or self._yielded) and not self._closed:
+                    if not self._yielded:
+                        self._status = {"uart": self.index, "status": "connecting"}
                     self._cv.wait()
                 if self._closed:
                     return
@@ -96,6 +104,10 @@ class UartChannel:
                             text = decoder.decode(chunk)
                             if text:
                                 self._publish("output", text=text)
+                            if self.yield_on and self.yield_on in chunk:
+                                with self._cv:
+                                    self._yielded = True
+                                raise ConnectionError("console taken over by another client")
                     finally:
                         with self._write_lock:
                             self._sock = None
@@ -103,6 +115,12 @@ class UartChannel:
                 tail = decoder.decode(b"", final=True)
                 if tail:
                     self._publish("output", text=tail)
+                with self._cv:
+                    yielded = self._yielded
+                if yielded:
+                    self._publish("status", status="taken_over",
+                                  message="Another client took this console; reopen it here to take it back")
+                    continue
                 if self._active():
                     self._publish("status", status="disconnected",
                                   message=f"{error}; retrying")
@@ -131,21 +149,49 @@ class UartChannel:
 
 
 class UartHub:
-    """At most one upstream connection per UART, regardless of browser count."""
+    """At most one upstream connection per UART, regardless of browser count.
+
+    Channels 0..count-1 are the fixed ser2net ports; others (backpack
+    consoles) come and go with add_channel/remove_channel.
+    """
 
     def __init__(self, host="127.0.0.1", base_port=3000, count=24,
                  max_viewers=32, retry_delay=2.0):
         if not 0 <= count <= 64 or not 1 <= base_port <= 65535 - max(0, count - 1):
             raise ValueError("Invalid UART count or TCP port range")
-        self.channels = [UartChannel(host, base_port + i, i, retry_delay)
-                         for i in range(count)]
+        self.retry_delay = retry_delay
+        self.channels = {i: UartChannel(host, base_port + i, i, retry_delay)
+                         for i in range(count)}
         self.max_viewers = max_viewers
         self._lock = threading.Lock()
         self._subscriptions = set()
 
+    def add_channel(self, index, host, port, name, yield_on=None):
+        """Add or retarget a console. A changed address takes effect for the
+        next connection; viewers of the old one are closed with it."""
+        with self._lock:
+            old = self.channels.get(index)
+            if old and (old.host, old.port, old.name, old.yield_on) == (host, port, name, yield_on):
+                return
+            self.channels[index] = UartChannel(host, port, index, self.retry_delay,
+                                               name=name, yield_on=yield_on)
+            if old is None:
+                return
+            for subscription in [s for s in self._subscriptions if index in s.indices]:
+                subscription.overflow.set()
+        old.close()
+
+    def remove_channel(self, index):
+        with self._lock:
+            channel = self.channels.pop(index, None)
+            for subscription in [s for s in self._subscriptions if index in s.indices]:
+                subscription.overflow.set()
+        if channel:
+            channel.close()
+
     def subscribe(self, indices):
         indices = frozenset(indices)
-        if not indices or not indices.issubset(range(len(self.channels))):
+        if not indices or not indices.issubset(self.channels):
             raise ValueError("Invalid UART selection")
         with self._lock:
             if len(self._subscriptions) >= self.max_viewers:
@@ -158,16 +204,19 @@ class UartHub:
             return subscription
 
     def write(self, index, data):
-        if not 0 <= index < len(self.channels):
+        channel = self.channels.get(index)
+        if channel is None:
             raise ValueError("Invalid UART")
-        self.channels[index].write(data)
+        channel.write(data)
 
     def unsubscribe(self, subscription):
         with self._lock:
             self._subscriptions.discard(subscription)
             for index in subscription.indices:
-                self.channels[index].remove(subscription)
+                channel = self.channels.get(index)
+                if channel:
+                    channel.remove(subscription)
 
     def close(self):
-        for channel in self.channels:
+        for channel in list(self.channels.values()):
             channel.close()

@@ -17,7 +17,7 @@ let demo, browser, panel, passed = 0, failed = 0;
 
 async function open(page) {
   await page.click('#uartSection > summary');
-  await page.waitForFunction(() => document.querySelectorAll('[data-uart]').length === 25);
+  await page.waitForFunction(() => document.querySelectorAll('[data-uart]').length === 26);
 }
 
 async function output(page, pattern) {
@@ -74,7 +74,7 @@ async function test(name, run) {
   });
   browser = await chromium.launch();
 
-  await test('on-demand streaming, switching, and all 24 labeled consoles', async page => {
+  await test('on-demand streaming, switching, and all 24 ser2net consoles plus a backpack console, labeled', async page => {
     const requests = [];
     page.on('request', request => {
       if (request.url().includes('/api/uart/stream')) requests.push(request.url());
@@ -91,7 +91,7 @@ async function test(name, run) {
     await page.click(port('all'));
     await output(page, '\\[ttyUSB23\\] ttyUSB23 demo: console output');
     await output(page, '\\[ttyUSB0\\] ttyUSB0 demo: console output');
-    assert.equal(await page.locator('#uartConnection').textContent(), '24 / 24 connected');
+    assert.equal(await page.locator('#uartConnection').textContent(), '25 / 25 connected');
     assert.equal(requests.length, 3, 'All UARTs uses one HTTP stream');
   });
 
@@ -264,7 +264,7 @@ async function test(name, run) {
     await page.click('#uartPopout');
     const popup = await opened;
     await output(popup, '\\[ttyUSB23\\] ttyUSB23 demo');
-    await popup.waitForFunction(() => document.getElementById('uartConnection').textContent === '24 / 24 connected');
+    await popup.waitForFunction(() => document.getElementById('uartConnection').textContent === '25 / 25 connected');
     assert.match(await popup.title(), /^All UARTs · UART console/);
     await popup.click('#uartConnect');
     await pause(200);
@@ -490,7 +490,7 @@ async function test(name, run) {
   await test('phone dock keeps the console on screen while relays are used', async page => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.click('#uartSection > summary');
-    await page.waitForFunction(() => document.querySelectorAll('#uartPortSelect option').length === 26);
+    await page.waitForFunction(() => document.querySelectorAll('#uartPortSelect option').length === 27);
     assert.equal(await page.locator('#uartPorts').isVisible(), false, 'phones pick a port from the dropdown');
     await page.selectOption('#uartPortSelect', '5');
     await output(page, 'ttyUSB5 demo');
@@ -545,6 +545,24 @@ async function test(name, run) {
     await page.reload({ waitUntil: 'networkidle' });
     assert.equal(await page.evaluate(() => document.querySelector('[data-board-idx="1"]').classList.contains('collapsed')), true);
     assert.equal(await page.evaluate(() => document.body.classList.contains('hide-unnamed')), true);
+  });
+
+  await test('a backpack card drives its unit and opens its console', async page => {
+    const card = page.locator('.backpack-card[data-bp="1"]');
+    await card.scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => document.querySelector('.backpack-card[data-bp="1"]').classList.contains('is-online'));
+    await page.click('[data-bp-action="bootrom"]');
+    await page.waitForFunction(() => /a108:c309 bootrom/.test(document.querySelector('[data-bp-usb]').textContent));
+    await page.click('[data-bp-switch="boot"]');
+    await page.waitForFunction(() => document.querySelector('[data-bp-switch="boot"]').getAttribute('aria-pressed') === 'true');
+    await page.focus('[data-bp-switch="boot"]');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('[data-bp-switch="boot"]').getAttribute('aria-pressed') === 'false');
+    await page.click('[data-bp-console="101"]');
+    await output(page, 'camera console line');
+    assert.equal(await page.textContent('#uartName'), 'T31 on backpack');
+    await page.click('#editModeBtn');
+    assert.equal(await page.locator('[data-bp-remove="1"]').isVisible(), true);
   });
 
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);

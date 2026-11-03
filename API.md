@@ -99,6 +99,12 @@ ser2net (`pi/ser2net.yaml`). Operators can set `RELAY_PANEL_UART_HOST`,
 `RELAY_PANEL_UART_BASE_PORT`, and `RELAY_PANEL_UART_COUNT` (0–64) on the server.
 Callers cannot supply arbitrary hostnames or TCP ports.
 
+[Backpack](#backpacks) consoles follow, numbered 100 + the unit's id, named
+after the unit, with `"backpack": <id>`. A unit serves one console client at a
+time: if something else takes it over, its stream reports
+`{"status": "taken_over"}` and the panel stays off until a viewer opens it
+again.
+
 ### Stream output
 
 ```bash
@@ -198,6 +204,65 @@ alongside `uarts`:
 
 Input does not count as a bench write: the response carries no `write_seq` and
 triggers no hardware resample.
+
+## Backpacks
+
+thingino backpacks the panel knows of, read from each unit every second. Also
+included in `GET /api/state` as `backpacks`.
+
+```bash
+curl -s $PANEL/api/backpacks
+```
+
+```json
+{"backpacks": [{"id": 1, "name": "thingino-backpack-1a2b", "host": "10.0.0.7",
+  "mdns": "thingino-backpack-1a2b", "address": "10.0.0.7", "online": true, "stale": false,
+  "error": null, "version": "v0.2.0", "power": "on", "boot_pin": "released",
+  "usb": ["a108:c309"], "stuck_s": null, "recoveries": 0, "bootsel": "low",
+  "usb_port": "on", "flash_lent": false, "dfu": "10.0.0.7:5050", "uart": 101}]}
+```
+
+`online` is false, with `error` saying why, while the unit does not answer;
+`stale` means no reading for 5 s. `usb` lists the VID:PID of each device on the
+unit's camera USB port (`a108:c309` bootrom, `a108:4d44` DFU gadget). `dfu` is
+the address for `thingino-dfu --host`; `uart` is its console's index in
+[UART consoles](#uart-consoles).
+
+### Act on a unit
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"id": 1, "action": "bootrom"}' $PANEL/api/backpack/action
+```
+
+Actions: `power-on`, `power-off`, `power-cycle`, `boot-hold`, `boot-release`,
+`bootrom`. The unit's answer is passed through: `{"ok": true, "message": ...}`,
+or `{"ok": false, "error": ...}` with 409. `bootrom` can take ~10 s. 502 means
+the unit did not answer. Needs a `backpacks` grant: `{"allowed": {"backpacks": [1]}}`.
+
+### Settings
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"id": 1, "usb_port": "off"}' $PANEL/api/backpack/setting
+```
+
+One of `bootsel` (`low`, `high`) or `usb_port` (`on`, `off`), saved on the unit.
+
+### Add, rename, remove, discover
+
+Owner only, except rename (a `backpacks` grant).
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" -d '{"host": "10.0.0.7", "name": "T31"}' $PANEL/api/backpacks
+curl -s -X PUT -H "Content-Type: application/json" -d '{"id": 1, "name": "T31"}' $PANEL/api/backpack/name
+curl -s -X DELETE $PANEL/api/backpacks/1
+curl -s -X POST -H "Content-Type: application/json" -d '{}' $PANEL/api/backpacks/discover
+```
+
+Adding takes optional `http_port`, `console_port` and `dfu_port` (80, 3000,
+5050). Ids are never reused, so a token's grant cannot come to mean another
+unit. A removed unit's mDNS name is remembered, and discovery skips it.
 
 ## Control Relays
 

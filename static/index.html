@@ -948,6 +948,30 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-window .uart-toolbar, .uart-window .uart-hint { flex: none; }
 .uart-window .uart-output { flex: 1; height: auto; min-height: 0; max-height: none; }
 
+
+/* --- Backpacks: one card per ESP32 unit and its camera --- */
+.backpacks-section { flex-basis: 100%; }
+.backpack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; }
+.backpack-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--off-surface);
+  padding: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+.backpack-card.is-offline { opacity: 0.6; border-style: dashed; }
+.backpack-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.backpack-head .relay-indicator { flex: none; }
+.backpack-card.is-online .backpack-head .relay-indicator { background: var(--on); box-shadow: 0 0 8px var(--on); }
+.backpack-card.is-offline .backpack-head .relay-indicator { background: #d8aa50; }
+.backpack-name { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.backpack-meta { color: var(--text-dim); font: 0.6875rem 'SF Mono', 'Fira Code', monospace; overflow-wrap: anywhere; }
+.backpack-switches { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.backpack-switches .relay-card { min-height: 44px; padding: 0.5rem 0.625rem; flex-direction: row; align-items: center; gap: 0.5rem; }
+.backpack-switches .relay-name { flex: 1; }
+.backpack-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.backpack-usb { color: var(--text-dim); font-size: 0.75rem; }
+.backpack-usb .mono { font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text); }
+.backpack-usb .usb-flashable { color: var(--on); }
+.backpack-error { color: #ebc577; font-size: 0.75rem; overflow-wrap: anywhere; }
+.backpack-error:empty, .backpack-edit { display: none; }
+body.edit-mode .backpack-edit { display: inline-flex; }
+
 /* --- Phone layout: console docked to the bottom, compact relay rows --- */
 .uart-dock-handle, .uart-port-select, .uart-dock-btn, .uart-dock-status { display: none; }
 .section-collapse { background: none; border: 0; padding: 0.25rem; margin: 0 -0.25rem 0 -0.5rem; color: var(--text-dim);
@@ -999,7 +1023,9 @@ body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
   html:not(.uart-window) .uart-toolbar h3 { display: none; }
   html:not(.uart-window) .uart-controls { flex-wrap: nowrap; width: auto; margin-left: auto; }
   html:not(.uart-window) .uart-section[open] .uart-dock-btn { display: inline-block; flex: none; padding: 0.25rem 0.6rem; }
-  html:not(.uart-window) .uart-dock-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  html:not(.uart-window) .uart-dock-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0; flex: 1 1 auto; text-align: right; }
+  html:not(.uart-window) .uart-section > summary { white-space: nowrap; }
   /* Chrome and Safari wrap a <details> body in ::details-content, which must pass the flex height on. */
   html:not(.uart-window) .uart-section[open]::details-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   html:not(.uart-window) .uart-output { flex: 1; height: auto; max-height: none; min-height: 3rem; }
@@ -2108,12 +2134,169 @@ function renderUsbSection() {
   </div>`;
 }
 
+// Bootrom and DFU gadget ids worth calling out on a backpack's USB line.
+const USB_ROLES = { 'a108:c309': 'bootrom', 'a108:4d44': 'DFU gadget' };
+
+function renderBackpacksSection() {
+  const units = state.backpacks || [];
+  const cards = units.map(b => `<div class="backpack-card" data-bp="${b.id}">
+      <div class="backpack-head">
+        <div class="relay-indicator"></div>
+        <span class="backpack-name" title="${escAttr(b.name)}">${escHtml(b.name)}</span>
+        <span class="backpack-edit" style="margin-left:auto;gap:.375rem">
+          <button class="btn-surface btn-sm" data-bp-rename="${b.id}" type="button">Rename</button>
+          <button class="btn-danger btn-sm" data-bp-remove="${b.id}" type="button">Remove</button>
+        </span>
+      </div>
+      <div class="backpack-meta" data-bp-meta></div>
+      <div class="backpack-switches">
+        <div class="relay-card" role="button" tabindex="0" data-bp-switch="power" data-bp-id="${b.id}"
+             aria-label="Camera power"><div class="relay-indicator"></div><div class="relay-name">Power</div>
+             <div class="relay-state"></div></div>
+        <div class="relay-card" role="button" tabindex="0" data-bp-switch="boot" data-bp-id="${b.id}"
+             aria-label="Boot pin held"><div class="relay-indicator"></div><div class="relay-name">Boot pin</div>
+             <div class="relay-state"></div></div>
+      </div>
+      <div class="backpack-actions">
+        <button class="btn-surface btn-sm" data-bp-action="bootrom" data-bp-id="${b.id}" type="button"
+                title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button>
+        <button class="btn-surface btn-sm" data-bp-action="power-cycle" data-bp-id="${b.id}" type="button">Power cycle</button>
+        <button class="btn-surface btn-sm" data-bp-console="${b.uart}" type="button">Console</button>
+      </div>
+      <div class="backpack-usb" data-bp-usb></div>
+      <div class="backpack-error" data-bp-error></div>
+    </div>`).join('');
+  const empty = `<div class="loading" style="min-height:60px;font-size:0.875rem">No backpacks yet. They are found on the network automatically; in edit mode, add one by address.</div>`;
+  return `<div class="board-section backpacks-section">
+    <div class="board-header">
+      <span class="board-name">Backpacks</span>
+      <span class="board-addr">${units.length} unit${units.length === 1 ? '' : 's'} · ESP32 camera controllers</span>
+      <div class="board-actions backpack-edit">
+        <button class="btn-surface btn-sm" data-bp-discover type="button" title="Look for backpacks on the network now">Discover</button>
+        <button class="btn-surface btn-sm" data-bp-add type="button">+ Backpack</button>
+      </div>
+    </div>
+    ${units.length ? `<div class="backpack-grid">${cards}</div>` : empty}
+  </div>`;
+}
+
+function paintBackpacks() {
+  for (const b of state.backpacks || []) {
+    const card = boardsEl.querySelector(`.backpack-card[data-bp="${b.id}"]`);
+    if (!card) continue;
+    card.classList.toggle('is-online', b.online && !b.stale);
+    card.classList.toggle('is-offline', !b.online);
+    setText(card.querySelector('[data-bp-meta]'),
+      [b.host !== b.name ? b.host : null, b.version, `dfu ${b.dfu}`].filter(Boolean).join(' · '));
+    const busy = pendingBackpacks.has(b.id);
+    const boot = b.boot_pin == null ? null : b.boot_pin === 'held' ? 'held' : 'off';
+    for (const [key, on, label] of [['power', b.power === 'on', b.power], ['boot', b.boot_pin === 'held', boot]]) {
+      const sw = card.querySelector(`[data-bp-switch="${key}"]`);
+      sw.classList.toggle('is-on', on);
+      sw.setAttribute('aria-pressed', String(on));
+      sw.setAttribute('aria-disabled', String(busy || !b.online));
+      setText(sw.querySelector('.relay-state'), label ? label.toUpperCase() : '?');
+    }
+    for (const button of card.querySelectorAll('[data-bp-action]')) button.disabled = busy || !b.online;
+    const usb = b.usb || [];
+    const usbLine = card.querySelector('[data-bp-usb]');
+    usbLine.innerHTML = b.usb_port === 'off' ? 'USB port disconnected (set on the unit)'
+      : usb.length ? 'USB: ' + usb.map(id => USB_ROLES[id]
+        ? `<span class="mono usb-flashable">${escHtml(id)}</span> ${USB_ROLES[id]}` : `<span class="mono">${escHtml(id)}</span>`).join(', ')
+      : 'USB: nothing enumerated';
+    setText(card.querySelector('[data-bp-error]'),
+      !b.online ? `Offline: ${b.error || 'no answer'}` : busy ? pendingBackpacks.get(b.id) : '');
+  }
+}
+
+const pendingBackpacks = new Map();
+
+async function backpackAction(id, action, label) {
+  if (pendingBackpacks.has(id)) return;
+  pendingBackpacks.set(id, `${label}…`);
+  paintBackpacks();
+  // `bootrom` waits for the bootrom to enumerate, up to 10 s on the unit.
+  const result = await api('POST', '/api/backpack/action', { id, action }, { timeout: 30000 });
+  pendingBackpacks.delete(id);
+  paintBackpacks();
+  if (result.error) toast(`${label}: ${result.error}`);
+  else if (result.message) toast(`${label}: ${result.message}`);
+}
+
+// A console to start once the section's own list load (fired by opening it) lands.
+let uartStartAfterLoad = null;
+
+function openBackpackConsole(index) {
+  if (!uartSection.open) {
+    uartStartAfterLoad = index;
+    uartSection.open = true;
+  } else {
+    startUart(index);
+  }
+  if (!dockPhone.matches) uartSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function backpackEdit(target) {
+  const add = target.closest('[data-bp-add]');
+  const discover = target.closest('[data-bp-discover]');
+  const remove = target.closest('[data-bp-remove]');
+  const rename = target.closest('[data-bp-rename]');
+  if (add) {
+    const host = prompt('Backpack address or hostname (as the panel reaches it):');
+    if (!host) return;
+    const r = await api('POST', '/api/backpacks', { host: host.trim() });
+    toast(r.error ? `Add failed: ${r.error}` : 'Backpack added');
+  } else if (discover) {
+    toast('Looking for backpacks…');
+    const r = await api('POST', '/api/backpacks/discover', {}, { timeout: 20000 });
+    toast(r.error ? `Discovery failed: ${r.error}` : `Found ${Object.keys(r.found || {}).length} on the network`);
+  } else if (remove) {
+    const id = Number(remove.dataset.bpRemove);
+    const unit = (state.backpacks || []).find(b => b.id === id);
+    if (!confirm(`Remove ${unit?.name || 'this backpack'} from the panel? Discovery will not add it back.`)) return;
+    const r = await api('DELETE', `/api/backpacks/${id}`);
+    if (r.error) toast(`Remove failed: ${r.error}`);
+  } else if (rename) {
+    const id = Number(rename.dataset.bpRename);
+    const unit = (state.backpacks || []).find(b => b.id === id);
+    const name = prompt('Name:', unit?.name || '');
+    if (!name) return;
+    const r = await api('PUT', '/api/backpack/name', { id, name: name.trim() });
+    if (r.error) toast(`Rename failed: ${r.error}`);
+  } else {
+    return false;
+  }
+  pokePollSoon();
+  return true;
+}
+
+function backpackClick(target) {
+  const sw = target.closest('[data-bp-switch]');
+  const act = target.closest('[data-bp-action]');
+  const consoleBtn = target.closest('[data-bp-console]');
+  if (sw) {
+    if (sw.getAttribute('aria-disabled') === 'true') return;
+    const id = Number(sw.dataset.bpId);
+    const on = sw.classList.contains('is-on');
+    if (sw.dataset.bpSwitch === 'power') backpackAction(id, on ? 'power-off' : 'power-on', on ? 'Power off' : 'Power on');
+    else backpackAction(id, on ? 'boot-release' : 'boot-hold', on ? 'Release boot pin' : 'Hold boot pin');
+  } else if (act) {
+    backpackAction(Number(act.dataset.bpId), act.dataset.bpAction, act.textContent.trim());
+  } else if (consoleBtn) {
+    openBackpackConsole(Number(consoleBtn.dataset.bpConsole));
+  } else {
+    backpackEdit(target);
+  }
+}
+
 function renderStructure() {
   const noBoards = !state.boards || state.boards.length === 0;
   const noGpios = !state.gpios || state.gpios.length === 0;
   const noPwm = !state.pwm || state.pwm.length === 0;
   if (noBoards && noGpios && noPwm) {
-    boardsEl.innerHTML = '<div class="loading">No boards, GPIOs or PWM configured</div>' + renderUsbSection();
+    boardsEl.innerHTML = '<div class="loading">No boards, GPIOs or PWM configured</div>'
+      + renderBackpacksSection() + renderUsbSection();
+    decorateSections();
     return;
   }
 
@@ -2181,7 +2364,8 @@ function renderStructure() {
     </div>`;
   }).join('');
 
-  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection() + renderUsbSection();
+  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection()
+    + renderBackpacksSection() + renderUsbSection();
   decorateSections();
 
 }
@@ -2194,6 +2378,7 @@ function structureSignature() {
     (state.boards || []).map(b => [b.bus, b.address, b.name, b.size, b.layout, b.flipped,
       b.relays.map(r => [r.num, r.name])]),
     (state.gpios || []).map(g => [g.wpi, g.pin, g.name]),
+    (state.backpacks || []).map(b => [b.id, b.name, b.uart]),
     (state.pwm || []).map(c => [c.index, c.bus, c.address, c.name, c.available,
       c.channels.map(ch => [ch.ch, ch.name, ch.phase]),
       (c.groups || []).map(g => [g.index, g.name, g.channels, g.weights])]),
@@ -2309,10 +2494,15 @@ function sectionKey(section) {
   if (section.matches('[data-pwm-idx]')) return `pwm:${section.dataset.pwmIdx}`;
   if (section.matches('.gpios-section')) return 'gpios';
   if (section.matches('.usb-section')) return 'usb';
+  if (section.matches('.backpacks-section')) return 'backpacks';
   return null;
 }
 
 function collapsedSummary(section) {
+  if (section.matches('.backpacks-section')) {
+    const units = state.backpacks || [];
+    return units.length ? `${units.filter(b => b.online).length} / ${units.length} online` : '';
+  }
   const on = section.querySelectorAll('.relay-card.is-on, .gpio-card.is-on').length;
   const total = section.querySelectorAll('.relay-card, .gpio-card').length;
   return total ? `${on} on` : '';
@@ -2381,6 +2571,7 @@ function render() {
     if (focusSelector) boardsEl.querySelector(focusSelector)?.focus();
   }
   paintLiveState();
+  paintBackpacks();
   if (collapsedSections.size) decorateSections();
   const usb = JSON.stringify([state.usb_vid, state.usb]);
   if (usb !== renderedUsb) {
@@ -2395,6 +2586,7 @@ function render() {
 boardsEl.addEventListener('click', (e) => {
   const collapse = e.target.closest('[data-collapse]');
   if (collapse) { toggleSectionCollapse(collapse.dataset.collapse); return; }
+  if (e.target.closest('.backpacks-section')) { backpackClick(e.target); return; }
   // Ignore clicks on inputs (active inline editing)
   if (e.target.tagName === 'INPUT') return;
 
@@ -2562,6 +2754,11 @@ document.addEventListener('keydown', (e) => {
   // Don't capture if focus is in an input, modal, etc.
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.closest('button')) return;
   if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return; }
+  const bpSwitch = e.target.closest('[data-bp-switch]');
+  if (bpSwitch) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); backpackClick(bpSwitch); }
+    return;
+  }
   const gpioCard = e.target.closest('.gpio-card');
   if (gpioCard) {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -2947,6 +3144,10 @@ if (uartWindowMode) {
 const uartSection = document.getElementById('uartSection');
 const uartOutput = document.getElementById('uartOutput');
 let uartChoices = [];
+// Names come from the server: ser2net ports are ttyUSBn, backpack consoles their unit's name.
+function uartLabel(index) {
+  return uartChoices.find(port => port.index === index)?.name ?? `ttyUSB${index}`;
+}
 let uartSelected = null;
 let uartSession = null;
 let uartListRequest = 0;
@@ -3062,7 +3263,7 @@ class UartLog {
     if (source) { source.row = null; source.cursor = 0; source.escape = ''; }
   }
   text(all) {
-    return this.lines.map(row => `${all ? `[ttyUSB${row.index}] ` : ''}${row.chars.join('')}`).join('\n');
+    return this.lines.map(row => `${all ? `[${uartLabel(row.index)}] ` : ''}${row.chars.join('')}`).join('\n');
   }
 }
 let uartLog = new UartLog();
@@ -3136,7 +3337,7 @@ function paintUartOutput() {
 }
 
 function paintUartHint() {
-  const name = `ttyUSB${uartSelected}`;
+  const name = uartLabel(uartSelected);
   const mode = !uartInteractive ? (uartCanType() ? 'Read only · tick Interactive to type into this console.' : '')
     : document.activeElement === uartInput
       ? `Typing into ${name} · Shift+Tab leaves the console · Shift+PageUp/PageDown scrolls.`
@@ -3209,7 +3410,7 @@ function uartInputProblem(message) {
 function sendUartInput(text) {
   if (!uartInteractive || !text) return;
   if (uartStates.get(uartSelected)?.status !== 'connected') {
-    uartInputProblem(`ttyUSB${uartSelected} is not connected; input dropped.`);
+    uartInputProblem(`${uartLabel(uartSelected)} is not connected; input dropped.`);
     return;
   }
   if (uartInputQueue.length + text.length > UART_INPUT_QUEUE_MAX) {
@@ -3237,8 +3438,8 @@ async function flushUartInput() {
       const result = await api('POST', '/api/uart/input', { uart: index, data: chunk }, { timeout: 4000 });
       if (result.error) {
         uartInputQueue = '';
-        uartInputProblem(result.uncertain ? `${result.error}; ttyUSB${index} may not have received that input.`
-          : result.error === 'forbidden' ? `Your access does not allow typing into ttyUSB${index}.` : result.error);
+        uartInputProblem(result.uncertain ? `${result.error}; ${uartLabel(index)} may not have received that input.`
+          : result.error === 'forbidden' ? `Your access does not allow typing into ${uartLabel(index)}.` : result.error);
         if (result.error === 'forbidden') await loadUarts();
         break;
       }
@@ -3252,19 +3453,21 @@ function paintUartConnection() {
   const selected = uartSelected === 'all' ? uartChoices.map(port => port.index) : [uartSelected];
   const connected = selected.filter(index => uartStates.get(index)?.status === 'connected').length;
   const connecting = selected.some(index => uartStates.get(index)?.status === 'connecting');
+  const takenOver = selected.some(index => uartStates.get(index)?.status === 'taken_over');
   const message = connected ? (selected.length === 1 ? 'Connected' : `${connected} / ${selected.length} connected`)
-    : connecting ? 'Connecting…' : 'Unavailable · retrying';
+    : connecting ? 'Connecting…' : takenOver ? 'Taken over by another client · Connect to take it back'
+    : 'Unavailable · retrying';
   if (uartSession) setText(document.getElementById('uartConnection'), message);
   const select = document.getElementById('uartPortSelect');
   if (uartSelected !== null && select.value !== String(uartSelected)) select.value = String(uartSelected);
   setText(document.getElementById('uartDockStatus'), uartSelected === null ? ''
-    : `${uartSelected === 'all' ? 'all' : `ttyUSB${uartSelected}`} · ${uartSession ? message : 'disconnected'}`);
+    : `${uartSelected === 'all' ? 'all' : uartLabel(uartSelected)} · ${uartSession ? message : 'disconnected'}`);
   for (const button of document.querySelectorAll('[data-uart]')) {
     const index = button.dataset.uart === 'all' ? 'all' : Number(button.dataset.uart);
     button.setAttribute('aria-pressed', String(index === uartSelected));
     const status = index === 'all' ? (connected ? 'connected' : '') : uartStates.get(index)?.status || '';
     button.dataset.status = status;
-    button.title = index === 'all' ? 'Monitor all available UARTs' : uartStates.get(index)?.message || `Monitor ttyUSB${index}`;
+    button.title = index === 'all' ? 'Monitor all available UARTs' : uartStates.get(index)?.message || `Monitor ${uartLabel(index)}`;
   }
 }
 
@@ -3298,6 +3501,11 @@ async function loadUarts() {
     ? `${uartChoices.length} UARTs · select one or monitor all with labeled output.` : 'No UARTs configured.');
   paintUartConnection();
   setUartInteractive(uartInteractive);
+  if (uartStartAfterLoad !== null) {
+    const index = uartStartAfterLoad;
+    uartStartAfterLoad = null;
+    if (uartChoices.some(port => port.index === index)) startUart(index);
+  }
   return true;
 }
 
@@ -3321,7 +3529,7 @@ function startUart(index, clear = true) {
   stopUart(); uartSelected = index;
   if (clear) { uartLog = new UartLog(); paintUartOutput(); }
   document.getElementById('uartConsole').hidden = false;
-  const name = index === 'all' ? 'All UARTs' : `ttyUSB${index}`;
+  const name = index === 'all' ? 'All UARTs' : uartLabel(index);
   setText(document.getElementById('uartName'), name);
   if (uartWindowMode) document.title = `${name} · UART console · ${location.hostname}`;
   uartOutput.setAttribute('aria-label', `${name} console output`);
@@ -3530,7 +3738,7 @@ document.getElementById('uartConsole').addEventListener('paste', e => {
     return;
   }
   const lines = text.replace(/\r$/, '').split('\r').length;
-  if (lines > 1 && !confirm(`Paste ${lines} lines into ttyUSB${uartSelected}? Each line runs as soon as it arrives.`)) return;
+  if (lines > 1 && !confirm(`Paste ${lines} lines into ${uartLabel(uartSelected)}? Each line runs as soon as it arrives.`)) return;
   sendUartInput(text);
   uartInput.focus({ preventScroll: true });
 });
