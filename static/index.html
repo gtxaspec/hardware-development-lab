@@ -920,6 +920,7 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-output { margin: 0; padding: 0.75rem; height: 24rem; max-height: 60vh; overflow: auto; white-space: pre;
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
   font: 0.75rem/1.5 'SF Mono', 'Fira Code', monospace; tab-size: 8; }
+.uart-output.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .uart-output:empty::before { content: 'Waiting for console output…'; color: var(--text-muted); }
 .uart-output:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 #uartConsole { position: relative; }
@@ -1024,7 +1025,9 @@ body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
   html:not(.uart-window) .uart-body:has(#uartConsole:not([hidden])) > .uart-help { display: none; }
   html:not(.uart-window) .uart-toolbar { flex: none; flex-wrap: nowrap; gap: 0.5rem; overflow-x: auto; margin-bottom: 0.4rem; }
   html:not(.uart-window) .uart-toolbar h3 { display: none; }
-  html:not(.uart-window) .uart-controls { flex-wrap: nowrap; width: auto; margin-left: auto; }
+  /* One row on most phones; a second rather than a hidden control on narrow ones. */
+  html:not(.uart-window) .uart-controls { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end;
+    gap: 0.375rem 0.4rem; min-width: 0; margin-left: 0; }
   html:not(.uart-window) .uart-section[open] .uart-dock-btn { display: inline-block; flex: none; padding: 0.25rem 0.6rem; }
   html:not(.uart-window) .uart-dock-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     min-width: 0; flex: 1 1 auto; text-align: right; }
@@ -1049,6 +1052,7 @@ body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
   .boards-container > .board-section { flex: none; }
   html:not(.uart-window) #uartConnection, html:not(.uart-window) #uartPopout { display: none; }
   html:not(.uart-window) .uart-controls .btn-sm, html:not(.uart-window) .uart-check { white-space: nowrap; flex: none; }
+  html:not(.uart-window) .uart-check .label-long { display: none; }
   .relay-board-view { display: block; }
   .board-outline.board-16 { width: 100%; }
 }
@@ -1100,7 +1104,8 @@ body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
           <div class="uart-controls">
             <label class="uart-check" id="uartInteractiveLabel" hidden title="Send what you type to this UART">
               <input type="checkbox" id="uartInteractive">Interactive</label>
-            <label class="uart-check"><input type="checkbox" id="uartFollow" checked>Follow output</label>
+            <label class="uart-check" title="Wrap long lines instead of scrolling sideways"><input type="checkbox" id="uartWrap" checked>Wrap<span class="label-long"> lines</span></label>
+            <label class="uart-check"><input type="checkbox" id="uartFollow" checked>Follow<span class="label-long"> output</span></label>
             <button class="btn-surface btn-sm" id="uartClear" type="button">Clear</button>
             <button class="btn-surface btn-sm" id="uartPopout" type="button"
                     title="Open this console in a separate window" aria-label="Pop out console (opens a new window)">Pop out</button>
@@ -3694,6 +3699,16 @@ document.getElementById('uartPopout').addEventListener('click', popOutUart);
 document.getElementById('uartConnect').addEventListener('click', () => {
   if (uartSession) stopUart();
   else if (uartSelected !== null) startUart(uartSelected, false);
+});
+function setUartWrap(on) {
+  uartOutput.classList.toggle('wrap', on);
+  document.getElementById('uartWrap').checked = on;
+  if (document.getElementById('uartFollow').checked) uartOutput.scrollTop = uartOutput.scrollHeight;
+}
+setUartWrap(loadPref('relay_panel_uart_wrap', true));
+document.getElementById('uartWrap').addEventListener('change', event => {
+  savePref('relay_panel_uart_wrap', event.target.checked);
+  setUartWrap(event.target.checked);
 });
 document.getElementById('uartFollow').addEventListener('change', event => {
   if (event.target.checked) uartOutput.scrollTop = uartOutput.scrollHeight;

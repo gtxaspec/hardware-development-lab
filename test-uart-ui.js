@@ -536,7 +536,11 @@ async function test(name, run) {
     assert.ok(await height() < full - 300, 'a collapsed board gives its height back');
     assert.match(await page.textContent('[data-board-idx="1"] .collapsed-summary'), /^\d+ on$/);
     assert.equal(await page.locator('[data-board-idx="1"] .board-actions').isVisible(), false);
-    await page.evaluate(() => { state.boards[0].relays[2].name = 'Relay 2'; renderedStructure = null; render(); });
+    // Renamed on the server, not in the page, so the next poll cannot undo it.
+    const rename = name => page.evaluate(name => api('PUT', '/api/relay/name', { board: 0, relay: 2, name }), name);
+    const original = await page.evaluate(() => state.boards[0].relays[2].name);
+    await rename('Relay 2');
+    await page.waitForFunction(() => document.querySelector('[data-board="0"][data-relay="2"]').classList.contains('is-unnamed'));
     await page.click('#hideUnnamedBtn');
     assert.equal(await page.locator('[data-board="0"][data-relay="2"]').isVisible(), false);
     await page.click('#editModeBtn');
@@ -545,6 +549,7 @@ async function test(name, run) {
     await page.reload({ waitUntil: 'networkidle' });
     assert.equal(await page.evaluate(() => document.querySelector('[data-board-idx="1"]').classList.contains('collapsed')), true);
     assert.equal(await page.evaluate(() => document.body.classList.contains('hide-unnamed')), true);
+    await rename(original);
   });
 
   await test('a backpack card drives its unit and opens its console', async page => {
@@ -563,6 +568,22 @@ async function test(name, run) {
     assert.equal(await page.textContent('#uartName'), 'T31 on backpack');
     await page.click('#editModeBtn');
     assert.equal(await page.locator('[data-bp-remove="1"]').isVisible(), true);
+  });
+
+  await test('long lines wrap by default, and the choice is remembered', async page => {
+    await open(page);
+    await page.click(port(3));
+    await output(page, 'ttyUSB3 demo');
+    await page.click('#uartConnect');
+    await page.evaluate(() => { uartLog.feed(3, 'x'.repeat(600) + '\n'); paintUartOutput(); });
+    const sideways = () => page.evaluate(() => uartOutput.scrollWidth > uartOutput.clientWidth + 1);
+    assert.equal(await page.isChecked('#uartWrap'), true);
+    assert.equal(await sideways(), false, 'wrapped output never scrolls sideways');
+    await page.uncheck('#uartWrap');
+    assert.equal(await sideways(), true, 'unwrapped, the long line scrolls');
+    await page.reload({ waitUntil: 'networkidle' });
+    await open(page);
+    assert.equal(await page.isChecked('#uartWrap'), false, 'remembered across reloads');
   });
 
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);
