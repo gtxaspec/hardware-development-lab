@@ -588,6 +588,7 @@ async function test(name, run) {
 
   await test('device rows switch power, open consoles, and edit the map', async page => {
     page.on('dialog', dialog => dialog.accept());
+    await page.click('#devicesBtn');  // the section is hidden until switched on
     // aria-busy appears once live state is painted onto the row; before that it reads "off".
     await page.waitForSelector('[data-device-power="3"][aria-busy]');
     const sw = '[data-device-power="3"]';
@@ -620,6 +621,7 @@ async function test(name, run) {
   await test('claims show who holds a device, and overriding one asks first', async page => {
     let answer = true;
     page.on('dialog', dialog => dialog.type() === 'prompt' ? dialog.accept('Tester') : (answer ? dialog.accept() : dialog.dismiss()));
+    await page.click('#devicesBtn');  // the section is hidden until switched on
     await page.waitForSelector('[data-device-power="3"][aria-busy]');
     await page.click('[data-device-claim-btn="3"]');
     await page.fill('#claimNote', 'soak test');
@@ -646,6 +648,22 @@ async function test(name, run) {
     await page.waitForFunction(([s, b]) => document.querySelector(s).getAttribute('aria-pressed') === b, [sw, before]);
     await page.click('[data-device-release="3"]');
     await page.waitForFunction(() => document.querySelector('.device-row[data-device="3"] [data-device-claim]').textContent === '');
+    await page.evaluate(() => fetch('/api/claims/t31x', { method: 'DELETE', headers: { 'X-Bench-Holder': 'other' } }));
+  });
+
+  await test('the device map and claims stay hidden until switched on', async page => {
+    await page.waitForSelector('.devices-section', { state: 'attached' });
+    assert.equal(await page.isVisible('.devices-section'), false, 'hidden by default');
+    await page.evaluate(() => fetch('/api/claims', { method: 'POST', headers: { 'Content-Type': 'application/json',
+      'X-Bench-Holder': 'other', 'X-Bench-Holder-Label': 'Other' }, body: JSON.stringify({ device: 't31x' }) }));
+    await page.waitForFunction(() => document.getElementById('devicesBtn').textContent === 'Devices · 1 in use');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('[data-board="0"][data-relay="0"]')).outlineStyle), 'none');
+    await page.click('#devicesBtn');
+    assert.equal(await page.isVisible('.devices-section'), true);
+    assert.equal(await page.textContent('#devicesBtn'), 'Devices');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('[data-board="0"][data-relay="0"]')).outlineStyle), 'dashed');
+    await page.reload({ waitUntil: 'networkidle' });
+    assert.equal(await page.isVisible('.devices-section'), true, 'remembered');
     await page.evaluate(() => fetch('/api/claims/t31x', { method: 'DELETE', headers: { 'X-Bench-Holder': 'other' } }));
   });
 

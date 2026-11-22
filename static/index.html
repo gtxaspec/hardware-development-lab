@@ -956,6 +956,8 @@ body.edit-mode .board-name { cursor: pointer; }
 
 /* --- Devices: the bench's device map, one row per camera --- */
 .devices-section { flex-basis: 100%; }
+body:not(.show-devices) .devices-section { display: none; }
+#devicesBtn.active { border-color: var(--accent); color: var(--accent-hover); }
 .device-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.5rem; }
 .device-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.25rem 0.6rem;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--off-surface); padding: 0.5rem 0.65rem; min-width: 0; }
@@ -984,7 +986,7 @@ body.edit-mode .device-edit { display: inline-block; }
 .device-claim.mine { color: var(--on); }
 .device-claim:empty { display: none; }
 .device-row.claimed-theirs { border-color: #a07a2a; border-style: dashed; }
-.relay-card.is-claimed { outline: 1px dashed #d8aa50; outline-offset: -4px; }
+body.show-devices .relay-card.is-claimed { outline: 1px dashed #d8aa50; outline-offset: -4px; }
 
 /* --- Backpacks: one card per ESP32 unit and its camera --- */
 .backpacks-section { flex-basis: 100%; }
@@ -1097,6 +1099,8 @@ body.hide-unnamed:not(.edit-mode) .relay-card.is-unnamed { display: none; }
   <h1>Relay Control Panel <span class="poll-dot" id="pollDot" title="Polling indicator"></span></h1>
   <div class="header-actions">
     <button class="btn-edit-mode btn-sm" id="editModeBtn" onclick="toggleEditMode()" title="Toggle edit mode">Edit</button>
+    <button class="btn-surface btn-sm" id="devicesBtn" type="button" aria-pressed="false"
+            title="Show the device map: which relays and console each camera uses, and who is using it">Devices</button>
     <button class="btn-surface btn-sm" id="hideUnnamedBtn" type="button" title="Hide relays still named Relay N (shown again in edit mode)">Hide unnamed</button>
     <button class="btn-surface btn-sm setup-btn" onclick="addBoardModal()" title="Add I2C board">+ Board</button>
     <button class="btn-surface btn-sm setup-btn" onclick="addGpioModal()" title="Add GPIO pin">+ GPIO</button>
@@ -2259,6 +2263,9 @@ function claimLeft(c) {
 
 function paintDevices() {
   const me = benchHolder();
+  const inUse = (state.claims || []).length;
+  setText(document.getElementById('devicesBtn'),
+    inUse && !document.body.classList.contains('show-devices') ? `Devices · ${inUse} in use` : 'Devices');
   const claimedRelays = new Map();
   for (const d of state.devices || []) {
     const c = deviceClaim(d);
@@ -2880,6 +2887,20 @@ function setHideUnnamed(on) {
   button.textContent = on ? 'Show unnamed' : 'Hide unnamed';
 }
 setHideUnnamed(loadPref('relay_panel_hide_unnamed', false));
+
+function setShowDevices(on) {
+  document.body.classList.toggle('show-devices', on);
+  const button = document.getElementById('devicesBtn');
+  button.classList.toggle('active', on);
+  button.setAttribute('aria-pressed', String(on));
+}
+setShowDevices(loadPref('relay_panel_show_devices', false));
+document.getElementById('devicesBtn').addEventListener('click', () => {
+  const on = !document.body.classList.contains('show-devices');
+  savePref('relay_panel_show_devices', on);
+  setShowDevices(on);
+  paintDevices();
+});
 document.getElementById('hideUnnamedBtn').addEventListener('click', () => {
   const on = !document.body.classList.contains('hide-unnamed');
   savePref('relay_panel_hide_unnamed', on);

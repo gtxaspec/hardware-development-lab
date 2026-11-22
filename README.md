@@ -455,9 +455,11 @@ once the bootrom enumerates), **Power cycle**, the USB devices on its port, and
 **Devices** say what the bench's hardware is for: one per camera, naming its
 power, boot-pin and detach relays, its USB mux GPIO and console, or the
 backpack it sits on, with notes and per-device timing. The panel holds this
-map, so every browser, agent and skill reads the same one. They are listed at
-the top of the page with a power switch, the console, and in edit mode
-**+ Device**, Edit and Remove; `GET /api/devices`, `list_devices` and
+map, so every browser, agent and skill reads the same one. **Devices** in the
+page header shows them (hidden until switched on, remembered per browser; while
+hidden it reads "Devices · 2 in use" when anything is claimed): a row each with
+a power switch, the console, claims, and in edit mode **+ Device**, Edit and
+Remove; `GET /api/devices`, `list_devices` and
 `tools/bench.py list` show the same thing. A relay belongs to one device, and a
 board, GPIO or backpack a device uses cannot be removed until that device is
 edited.
