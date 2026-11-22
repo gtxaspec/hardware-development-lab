@@ -30,6 +30,8 @@ mcp = MCPServer(
         "USB port and console. list_backpacks shows them; backpack_action powers, "
         "power-cycles or puts the camera into its bootrom, and the unit's dfu "
         "address is what thingino-dfu --host flashes it through. "
+        "Devices name what each camera uses (relays, USB mux GPIO, console or "
+        "backpack): list_devices is the bench's device map. "
         "Adding, removing and re-addressing boards and PWM chips is deliberately "
         "not exposed here - that is physical setup, done in the web UI."
     ),
@@ -564,6 +566,68 @@ def backpack_setting(backpack: str, setting: str, value: str) -> dict:
     if isinstance(uid, dict):
         return uid
     return api("POST", "/api/backpack/setting", {"id": uid, setting: value}, timeout=20)
+
+
+
+@mcp.tool()
+def list_devices() -> dict:
+    """List the bench's devices: one camera each, with what drives it.
+
+    Each has an id and name, its power / boot / detach relays ({board, relay}),
+    an optional usb_mux GPIO ({wpi, host_state}: the state that routes its USB
+    to the Pi), its console (uart index and uart_name, for the uart server) or
+    the backpack it sits on, timing overrides and notes. This is the bench's
+    one device map; use it to find which relays and console belong to a camera.
+    """
+    return api("GET", "/api/devices")
+
+
+@mcp.tool()
+def set_device(name: str, power: str | None = None, boot: str | None = None,
+               detach: str | None = None, usb_mux_wpi: int | None = None,
+               usb_mux_host_state: str = "off", uart: str | None = None,
+               backpack: str | None = None, notes: str | None = None) -> dict:
+    """Add a device, or update the one with this name. Fields left out keep
+    their value when updating.
+
+    Args:
+        name: Device name, e.g. t31x
+        power: Power relay as B<board>/<relay>, e.g. B0/10
+        boot: Boot-pin relay, e.g. B1/8
+        detach: Optional relay opened before power-on (e.g. a console TX line)
+        usb_mux_wpi: wiringPi number of the GPIO muxing its USB, if any
+        usb_mux_host_state: on or off: the GPIO state that routes USB to the Pi
+        uart: Console port (5 or ttyUSB5); not for a backpack device
+        backpack: The backpack it sits on (id, name or mDNS hostname), instead of relays
+        notes: Free text
+    """
+    current = next((d for d in api("GET", "/api/devices").get("devices", [])
+                    if d["name"].lower() == name.lower()), {})
+    item = {k: v for k, v in current.items() if k not in ("id", "uart_name")}
+    if current.get("backpack") is not None:
+        item.pop("uart", None)
+    for key, value in (("power", power), ("boot", boot), ("detach", detach), ("uart", uart),
+                       ("backpack", backpack), ("notes", notes)):
+        if value is not None:
+            item[key] = value
+    if usb_mux_wpi is not None:
+        item["usb_mux"] = {"wpi": usb_mux_wpi, "host_state": usb_mux_host_state}
+    item["name"] = current.get("name", name)
+    return api("POST", "/api/devices/import", {"devices": [item]})
+
+
+@mcp.tool()
+def remove_device(name: str) -> dict:
+    """Remove a device from the map (its relays and console stay as they are).
+
+    Args:
+        name: Device name
+    """
+    match = next((d for d in api("GET", "/api/devices").get("devices", [])
+                  if d["name"].lower() == name.lower()), None)
+    if match is None:
+        return {"error": f"no device {name!r}"}
+    return api("DELETE", f"/api/devices/{match['id']}")
 
 
 if __name__ == "__main__":

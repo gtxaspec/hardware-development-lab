@@ -234,7 +234,7 @@ class StartupTests(unittest.TestCase):
                 path.write_text(before)
             # load_config fills in the backpack lists in memory; the file is left alone.
             expected = dict(config if config is not None else {"boards": [], "gpios": [], "pwm": []},
-                            backpacks=[], backpacks_ignored=[])
+                            backpacks=[], backpacks_ignored=[], devices=[])
             with contextlib.ExitStack() as stack:
                 stack.enter_context(patch.object(rp, "CONFIG_FILE", path))
                 stack.enter_context(patch.object(rp, "LISTEN_HOST", "127.0.0.1"))

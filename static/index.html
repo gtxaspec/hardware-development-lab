@@ -953,6 +953,31 @@ body.edit-mode .board-name { cursor: pointer; }
 .uart-window .uart-output { flex: 1; height: auto; min-height: 0; max-height: none; }
 
 
+
+/* --- Devices: the bench's device map, one row per camera --- */
+.devices-section { flex-basis: 100%; }
+.device-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0.5rem; }
+.device-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.25rem 0.6rem;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--off-surface); padding: 0.5rem 0.65rem; min-width: 0; }
+.device-row.is-on { border-color: var(--on); }
+.device-power { width: 2.25rem; height: 1.3rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-hover);
+  position: relative; cursor: pointer; padding: 0; }
+.device-power::after { content: ''; position: absolute; top: 2px; left: 2px; width: calc(1.3rem - 6px); height: calc(1.3rem - 6px);
+  border-radius: 50%; background: var(--off); transition: transform var(--transition), background var(--transition); }
+.device-power[aria-pressed="true"] { border-color: var(--on); }
+.device-power[aria-pressed="true"]::after { transform: translateX(0.95rem); background: var(--on); box-shadow: 0 0 6px var(--on); }
+.device-power[aria-busy="true"]::after { background: #d8aa50; }
+.device-power:disabled { opacity: 0.4; cursor: default; }
+.device-main { min-width: 0; }
+.device-name { font-weight: 600; font-size: 0.9rem; }
+.device-notes { color: var(--text-dim); font-size: 0.75rem; margin-left: 0.4rem; }
+.device-meta { color: var(--text-dim); font: 0.6875rem 'SF Mono', 'Fira Code', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-actions { display: flex; gap: 0.3rem; }
+.device-edit { display: none; }
+body.edit-mode .device-edit { display: inline-block; }
+.device-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.75rem; }
+.device-form .wide { grid-column: 1 / -1; }
+
 /* --- Backpacks: one card per ESP32 unit and its camera --- */
 .backpacks-section { flex-basis: 100%; }
 .backpack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; }
@@ -2145,6 +2170,189 @@ function renderUsbSection() {
 // Bootrom and DFU gadget ids worth calling out on a backpack's USB line.
 const USB_ROLES = { 'a108:c309': 'bootrom', 'a108:4d44': 'DFU gadget' };
 
+// --- Devices ---
+function relayLabel(ref) {
+  if (!ref) return null;
+  const name = state.boards?.[ref.board]?.relays?.[ref.relay]?.name;
+  return `B${ref.board}/${ref.relay}${name ? ` ${name}` : ''}`;
+}
+
+function deviceBackpack(d) {
+  return d.backpack == null ? null : (state.backpacks || []).find(b => b.id === d.backpack);
+}
+
+function renderDevicesSection() {
+  const devices = state.devices || [];
+  const rows = devices.map(d => `<div class="device-row" data-device="${d.id}">
+      <button class="device-power" type="button" data-device-power="${d.id}" aria-pressed="false"
+              aria-label="${escAttr(d.name)} power"></button>
+      <div class="device-main">
+        <div><span class="device-name">${escHtml(d.name)}</span><span class="device-notes">${escHtml(d.notes || '')}</span></div>
+        <div class="device-meta" data-device-meta></div>
+      </div>
+      <div class="device-actions">
+        <button class="btn-surface btn-sm" type="button" data-device-console="${d.id}">Console</button>
+        <button class="btn-surface btn-sm device-edit" type="button" data-device-edit="${d.id}">Edit</button>
+        <button class="btn-danger btn-sm device-edit" type="button" data-device-remove="${d.id}">Remove</button>
+      </div>
+    </div>`).join('');
+  const empty = `<div class="loading" style="min-height:50px;font-size:0.875rem">No devices yet. In edit mode, + Device names a camera's relays and console; <code>bench.py push</code> imports a bench.toml.</div>`;
+  return `<div class="board-section devices-section">
+    <div class="board-header">
+      <span class="board-name">Devices</span>
+      <span class="board-addr">${devices.length} camera${devices.length === 1 ? '' : 's'}</span>
+      <div class="board-actions device-edit"><button class="btn-surface btn-sm" type="button" data-device-add>+ Device</button></div>
+    </div>
+    ${devices.length ? `<div class="device-list">${rows}</div>` : empty}
+  </div>`;
+}
+
+function devicePowerState(d) {
+  const unit = deviceBackpack(d);
+  if (unit) return { on: unit.power === 'on', busy: pendingBackpacks.has(unit.id), usable: unit.online };
+  if (!d.power) return { on: false, busy: false, usable: false };
+  const board = state.boards?.[d.power.board];
+  const relay = board?.relays?.[d.power.relay];
+  return { on: relay?.state === 'on', busy: board ? pendingSwitches.has(relayKey(board, d.power.relay)) : false,
+           usable: !!relay };
+}
+
+function paintDevices() {
+  for (const d of state.devices || []) {
+    const row = boardsEl.querySelector(`.device-row[data-device="${d.id}"]`);
+    if (!row) continue;
+    const power = devicePowerState(d);
+    row.classList.toggle('is-on', power.on);
+    const sw = row.querySelector('[data-device-power]');
+    sw.setAttribute('aria-pressed', String(power.on));
+    sw.setAttribute('aria-busy', String(power.busy));
+    sw.disabled = !power.usable;
+    const unit = deviceBackpack(d);
+    const parts = unit ? [`backpack ${unit.name}`, unit.online ? null : 'offline']
+      : [`power ${relayLabel(d.power)}`, d.boot ? `boot ${relayLabel(d.boot)}` : null,
+         d.usb_mux ? `mux wPi ${d.usb_mux.wpi}` : null, d.uart != null ? uartLabel(d.uart) : null];
+    const meta = row.querySelector('[data-device-meta]');
+    setText(meta, parts.filter(Boolean).join(' · '));
+    meta.title = meta.textContent;
+    row.querySelector('[data-device-console]').disabled = !unit && d.uart == null;
+  }
+}
+
+function deviceConsoleIndex(d) {
+  const unit = deviceBackpack(d);
+  return unit ? unit.uart : d.uart;
+}
+
+async function deviceClick(target) {
+  const id = n => Number(n);
+  const power = target.closest('[data-device-power]');
+  const consoleBtn = target.closest('[data-device-console]');
+  const edit = target.closest('[data-device-edit]');
+  const remove = target.closest('[data-device-remove]');
+  const find = n => (state.devices || []).find(d => d.id === id(n));
+  if (power) {
+    const d = find(power.dataset.devicePower);
+    const unit = d && deviceBackpack(d);
+    if (unit) {
+      const on = unit.power === 'on';
+      backpackAction(unit.id, on ? 'power-off' : 'power-on', on ? 'Power off' : 'Power on');
+    } else if (d?.power) {
+      toggleRelay(d.power.board, d.power.relay);
+    }
+  } else if (consoleBtn) {
+    const d = find(consoleBtn.dataset.deviceConsole);
+    if (d) openBackpackConsole(deviceConsoleIndex(d));
+  } else if (edit) {
+    openDeviceModal(find(edit.dataset.deviceEdit));
+  } else if (remove) {
+    const d = find(remove.dataset.deviceRemove);
+    if (!d || !confirm(`Remove ${d.name} from the device map? Its relays and console are not touched.`)) return;
+    const r = await api('DELETE', `/api/devices/${d.id}`);
+    if (r.error) toast(`Remove failed: ${r.error}`);
+    pokePollSoon();
+  } else if (target.closest('[data-device-add]')) {
+    openDeviceModal(null);
+  }
+}
+
+// One modal, built on demand, for adding and editing a device.
+let deviceModalId = null;
+
+function deviceOptions(selected, items, blank = '(none)') {
+  return [`<option value="">${blank}</option>`].concat(items.map(([value, label]) =>
+    `<option value="${escAttr(value)}"${String(value) === String(selected ?? '') ? ' selected' : ''}>${escHtml(label)}</option>`)).join('');
+}
+
+async function openDeviceModal(d) {
+  deviceModalId = d ? d.id : null;
+  if (!uartChoices.length) {
+    const list = await api('GET', '/api/uarts');
+    if (!list.error) uartChoices = list.uarts || [];
+  }
+  const relays = [];
+  (state.boards || []).forEach((board, bi) => board.relays.forEach(r =>
+    relays.push([`B${bi}/${r.num}`, `B${bi}/${r.num} · ${r.name}`])));
+  const ref = x => x ? `B${x.board}/${x.relay}` : '';
+  const gpios = (state.gpios || []).map(g => [g.wpi, `wPi ${g.wpi} · ${g.name}`]);
+  const consoles = uartChoices.filter(u => u.backpack === undefined).map(u => [u.index, u.name]);
+  const units = (state.backpacks || []).map(b => [b.id, b.name]);
+  let modal = document.getElementById('deviceModal');
+  if (!modal) {
+    modal = Object.assign(document.createElement('div'), { id: 'deviceModal', className: 'modal-overlay' });
+    modal.addEventListener('click', e => { if (e.target === modal) closeDeviceModal(); });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `<div class="modal" role="dialog" aria-labelledby="deviceModalTitle">
+    <h2 id="deviceModalTitle">${d ? `Edit ${escHtml(d.name)}` : 'Add device'}</h2>
+    <div class="device-form">
+      <label class="wide" for="devName">Name</label>
+      <input class="wide" id="devName" value="${escAttr(d?.name || '')}" placeholder="e.g. t31x">
+      <label class="wide" for="devBackpack">On a backpack <span style="opacity:.7">(instead of relays and a console)</span></label>
+      <select class="wide" id="devBackpack">${deviceOptions(d?.backpack, units)}</select>
+      <div><label for="devPower">Power relay</label><select id="devPower">${deviceOptions(ref(d?.power), relays)}</select></div>
+      <div><label for="devBoot">Boot-pin relay</label><select id="devBoot">${deviceOptions(ref(d?.boot), relays)}</select></div>
+      <div><label for="devDetach">Detach relay</label><select id="devDetach">${deviceOptions(ref(d?.detach), relays)}</select></div>
+      <div><label for="devUart">Console</label><select id="devUart">${deviceOptions(d?.backpack == null ? d?.uart : '', consoles)}</select></div>
+      <div><label for="devMux">USB mux GPIO</label><select id="devMux">${deviceOptions(d?.usb_mux?.wpi, gpios)}</select></div>
+      <div><label for="devMuxState">Mux state for the Pi</label><select id="devMuxState">
+        <option value="off"${d?.usb_mux?.host_state !== 'on' ? ' selected' : ''}>off</option>
+        <option value="on"${d?.usb_mux?.host_state === 'on' ? ' selected' : ''}>on</option></select></div>
+      <label class="wide" for="devNotes">Notes</label>
+      <input class="wide" id="devNotes" value="${escAttr(d?.notes || '')}" placeholder="board, flash, quirks">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-surface" type="button" data-device-cancel>Cancel</button>
+      <button class="btn-accent" type="button" data-device-save>${d ? 'Save' : 'Add device'}</button>
+    </div>
+  </div>`;
+  modal.querySelector('[data-device-cancel]').addEventListener('click', closeDeviceModal);
+  modal.querySelector('[data-device-save]').addEventListener('click', saveDevice);
+  modal.classList.add('open');
+  modal.querySelector('#devName').focus();
+}
+
+function closeDeviceModal() {
+  document.getElementById('deviceModal')?.classList.remove('open');
+}
+
+async function saveDevice() {
+  const value = id => document.getElementById(id).value.trim();
+  const backpack = value('devBackpack');
+  const body = { name: value('devName'), notes: value('devNotes') || null,
+                 backpack: backpack ? Number(backpack) : null };
+  for (const [key, id] of [['power', 'devPower'], ['boot', 'devBoot'], ['detach', 'devDetach']]) {
+    body[key] = backpack ? null : value(id) || null;
+  }
+  body.uart = backpack || value('devUart') === '' ? null : Number(value('devUart'));
+  body.usb_mux = backpack || value('devMux') === '' ? null : { wpi: Number(value('devMux')), host_state: value('devMuxState') };
+  const r = deviceModalId == null ? await api('POST', '/api/devices', body)
+    : await api('PUT', '/api/device', { id: deviceModalId, ...body });
+  if (r.error) { toast(r.error); return; }
+  closeDeviceModal();
+  toast(deviceModalId == null ? `Added ${body.name}` : `Saved ${body.name}`);
+  pokePollSoon();
+}
+
 function renderBackpacksSection() {
   const units = state.backpacks || [];
   const cards = units.map(b => `<div class="backpack-card" data-bp="${b.id}">
@@ -2303,7 +2511,7 @@ function renderStructure() {
   const noPwm = !state.pwm || state.pwm.length === 0;
   if (noBoards && noGpios && noPwm) {
     boardsEl.innerHTML = '<div class="loading">No boards, GPIOs or PWM configured</div>'
-      + renderBackpacksSection() + renderUsbSection();
+      + renderDevicesSection() + renderBackpacksSection() + renderUsbSection();
     decorateSections();
     return;
   }
@@ -2372,7 +2580,7 @@ function renderStructure() {
     </div>`;
   }).join('');
 
-  boardsEl.innerHTML = boardsHtml + renderGpiosSection() + renderPwmSection()
+  boardsEl.innerHTML = renderDevicesSection() + boardsHtml + renderGpiosSection() + renderPwmSection()
     + renderBackpacksSection() + renderUsbSection();
   decorateSections();
 
@@ -2387,6 +2595,7 @@ function structureSignature() {
       b.relays.map(r => [r.num, r.name])]),
     (state.gpios || []).map(g => [g.wpi, g.pin, g.name]),
     (state.backpacks || []).map(b => [b.id, b.name, b.uart]),
+    (state.devices || []),
     (state.pwm || []).map(c => [c.index, c.bus, c.address, c.name, c.available,
       c.channels.map(ch => [ch.ch, ch.name, ch.phase]),
       (c.groups || []).map(g => [g.index, g.name, g.channels, g.weights])]),
@@ -2503,10 +2712,15 @@ function sectionKey(section) {
   if (section.matches('.gpios-section')) return 'gpios';
   if (section.matches('.usb-section')) return 'usb';
   if (section.matches('.backpacks-section')) return 'backpacks';
+  if (section.matches('.devices-section')) return 'devices';
   return null;
 }
 
 function collapsedSummary(section) {
+  if (section.matches('.devices-section')) {
+    const devices = state.devices || [];
+    return devices.length ? `${devices.filter(d => devicePowerState(d).on).length} on` : '';
+  }
   if (section.matches('.backpacks-section')) {
     const units = state.backpacks || [];
     return units.length ? `${units.filter(b => b.online).length} / ${units.length} online` : '';
@@ -2580,6 +2794,7 @@ function render() {
   }
   paintLiveState();
   paintBackpacks();
+  paintDevices();
   if (collapsedSections.size) decorateSections();
   const usb = JSON.stringify([state.usb_vid, state.usb]);
   if (usb !== renderedUsb) {
@@ -2595,6 +2810,7 @@ boardsEl.addEventListener('click', (e) => {
   const collapse = e.target.closest('[data-collapse]');
   if (collapse) { toggleSectionCollapse(collapse.dataset.collapse); return; }
   if (e.target.closest('.backpacks-section')) { backpackClick(e.target); return; }
+  if (e.target.closest('.devices-section')) { deviceClick(e.target); return; }
   // Ignore clicks on inputs (active inline editing)
   if (e.target.tagName === 'INPUT') return;
 
@@ -3115,6 +3331,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (document.getElementById('addBoardModal').classList.contains('open')) closeModal();
   if (document.getElementById('addGpioModal').classList.contains('open')) closeGpioModal();
+  if (document.getElementById('deviceModal')?.classList.contains('open')) closeDeviceModal();
   for (const [id, close] of PWM_MODALS) {
     if (document.getElementById(id).classList.contains('open')) close();
   }

@@ -174,6 +174,9 @@ def load_config():
     cfg.setdefault("gpios", [])
     cfg.setdefault("pwm", [])
     cfg.setdefault("backpacks", [])
+    # Devices name what the relays, GPIOs, consoles and backpacks are for:
+    # one camera each. The bench's single device map; bench.py reads it.
+    cfg.setdefault("devices", [])
     # mDNS names of units someone removed, so discovery does not re-add them.
     cfg.setdefault("backpacks_ignored", [])
     return cfg
@@ -1114,6 +1117,7 @@ class BenchSampler:
                                      background=background),
             "pwm": get_pwm_state(config, background=background),
             "usb": get_usb_devices(),
+            "devices": config["devices"],
             # so the UI can label the section with the vendor actually
             # being watched rather than assuming the default
             "usb_vid": USB_VID_FILTER,
@@ -1258,6 +1262,160 @@ def discover_backpacks():
     if changed:
         sync_backpacks(config)
     return found
+
+
+# --- Devices: which relays, GPIO, console or backpack make up each camera ---
+
+DEVICE_FIELDS = ("name", "power", "boot", "detach", "usb_mux", "uart", "backpack",
+                 "notes", "settle_secs", "enumerate_timeout_secs")
+
+
+def parse_relay_ref(value, config):
+    """{"board": b, "relay": r} or "B0/13" -> {"board", "relay"}, checked against the boards."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip().upper()
+        if not text.startswith("B") or "/" not in text:
+            raise ValueError(f"relay {value!r}: use B<board>/<relay>, e.g. B0/13")
+        board, relay = text[1:].split("/", 1)
+        value = {"board": board, "relay": relay}
+    if not isinstance(value, dict):
+        raise ValueError("relay must be {board, relay} or B<board>/<relay>")
+    try:
+        board, relay = int(value["board"]), int(value["relay"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("relay needs integer board and relay")
+    if not 0 <= board < len(config["boards"]):
+        raise ValueError(f"board {board} does not exist")
+    if not 0 <= relay < config["boards"][board]["size"]:
+        raise ValueError(f"board {board} has no relay {relay}")
+    return {"board": board, "relay": relay}
+
+
+def parse_uart_ref(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip().lower().removeprefix("ttyusb")
+        if not text.isdigit():
+            raise ValueError(f"uart {value!r}: use a port number or ttyUSB<n>")
+        value = int(text)
+    if type(value) is not int or value < 0:
+        raise ValueError("uart must be a port number")
+    return value
+
+
+def parse_backpack_ref(value, config):
+    if value in (None, ""):
+        return None
+    for b in config["backpacks"]:
+        if str(value) in (str(b["id"]), b.get("name") or "", b.get("mdns") or "", b["host"]):
+            return b["id"]
+    raise ValueError(f"no backpack {value!r}")
+
+
+def normalize_device(body, config, uid):
+    """A validated device entry from a request body. Raises ValueError."""
+    name = str(body.get("name") or "").strip()
+    if not name or len(name) > 64:
+        raise ValueError("name is required (at most 64 characters)")
+    for other in config["devices"]:
+        if other["id"] != uid and other["name"].lower() == name.lower():
+            raise ValueError(f"a device is already called {other['name']!r}")
+    device = {"id": uid, "name": name}
+    for role in ("power", "boot", "detach"):
+        ref = parse_relay_ref(body.get(role), config)
+        if ref:
+            device[role] = ref
+    mux = body.get("usb_mux")
+    if mux not in (None, ""):
+        if isinstance(mux, int):
+            mux = {"wpi": mux}
+        try:
+            wpi = int(mux["wpi"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("usb_mux needs a wpi number")
+        if not any(g["wpi"] == wpi for g in config["gpios"]):
+            raise ValueError(f"usb_mux: GPIO wPi {wpi} is not configured")
+        host_state = mux.get("host_state", "off")
+        if host_state not in ("on", "off"):
+            raise ValueError("usb_mux host_state must be on or off")
+        device["usb_mux"] = {"wpi": wpi, "host_state": host_state}
+    backpack = parse_backpack_ref(body.get("backpack"), config)
+    if backpack is not None:
+        device["backpack"] = backpack
+    uart = parse_uart_ref(body.get("uart"))
+    if uart is not None:
+        if backpack is not None:
+            raise ValueError("a backpack device uses its backpack's console; leave uart empty")
+        device["uart"] = uart
+    if "power" not in device and backpack is None:
+        raise ValueError("a device needs a power relay or a backpack")
+    if backpack is not None and any(k in device for k in ("power", "boot", "detach", "usb_mux")):
+        raise ValueError("a backpack device has no relays or mux of its own")
+    for key in ("settle_secs", "enumerate_timeout_secs"):
+        if body.get(key) not in (None, ""):
+            try:
+                number = float(body[key])
+            except (TypeError, ValueError):
+                number = -1
+            if not 0 < number <= 600:
+                raise ValueError(f"{key} must be between 0 and 600 seconds")
+            device[key] = number
+    notes = str(body.get("notes") or "").strip()
+    if notes:
+        device["notes"] = notes[:500]
+    if backpack is not None:
+        owner = next((o for o in config["devices"] if o["id"] != uid and o.get("backpack") == backpack), None)
+        if owner:
+            raise ValueError(f"that backpack is already {owner['name']!r}")
+    # A relay belongs to one device: two devices sharing one would switch each other.
+    mine = {(r["board"], r["relay"]) for r in (device.get(k) for k in ("power", "boot", "detach")) if r}
+    for other in config["devices"]:
+        if other["id"] == uid:
+            continue
+        theirs = {(r["board"], r["relay"]) for r in (other.get(k) for k in ("power", "boot", "detach")) if r}
+        shared = mine & theirs
+        if shared:
+            b, r = sorted(shared)[0]
+            raise ValueError(f"relay B{b}/{r} already belongs to {other['name']!r}")
+    return device
+
+
+def devices_using(config, board=None, max_relay=None, wpi=None, backpack=None):
+    """Names of devices that reference a board (or its relays from max_relay up),
+    a GPIO, or a backpack."""
+    names = []
+    for d in config["devices"]:
+        relays = [d.get(k) for k in ("power", "boot", "detach") if d.get(k)]
+        if board is not None and any(r["board"] == board and (max_relay is None or r["relay"] >= max_relay)
+                                     for r in relays):
+            names.append(d["name"])
+        elif wpi is not None and d.get("usb_mux", {}).get("wpi") == wpi:
+            names.append(d["name"])
+        elif backpack is not None and d.get("backpack") == backpack:
+            names.append(d["name"])
+    return names
+
+
+def next_device_id(config):
+    uid = max([config.get("device_next_id", 1)] + [d["id"] + 1 for d in config["devices"]])
+    config["device_next_id"] = uid + 1
+    return uid
+
+
+def describe_devices(config):
+    """Devices with their consoles named, for the API."""
+    out = []
+    for device in config["devices"]:
+        entry = dict(device)
+        if "backpack" in device:
+            entry["uart"] = backpack_uart(device["backpack"])
+        channel = uart_hub.channels.get(entry.get("uart"))
+        entry["uart_name"] = channel.name if channel else None
+        out.append(entry)
+    return out
 
 
 def discovery_loop():
@@ -1643,6 +1801,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             if entry is None:
                 self.send_json({"error": "Unknown backpack"}, 400)
                 return True
+            users = devices_using(config, backpack=uid)
+            if users:
+                self.send_json({"error": f"backpack {entry.get('name')} is {', '.join(users)}; "
+                                         "remove or edit those devices first"}, 409)
+                return True
             config["backpacks"].remove(entry)
             # Ids are never handed out again, even if this was the highest.
             config["backpack_next_id"] = max(config.get("backpack_next_id", 1), uid + 1)
@@ -1650,6 +1813,104 @@ class RelayHandler(BaseHTTPRequestHandler):
                 config["backpacks_ignored"].append(entry["mdns"])
             save_config(config)
         sync_backpacks(config)
+        self.send_json({"ok": True})
+        return True
+
+    def device_post(self, path, body):
+        if path not in ("/api/devices", "/api/devices/import"):
+            return False
+        if not self.authorize_owner_only():
+            self.forbidden()
+            return True
+        if not isinstance(body, dict):
+            self.send_json({"error": "Expected a JSON object"}, 400)
+            return True
+        with config_lock:
+            config = load_config()
+            if path == "/api/devices":
+                try:
+                    device = normalize_device(body, config, next_device_id(config))
+                except ValueError as e:
+                    self.send_json({"error": str(e)}, 400)
+                    return True
+                config["devices"].append(device)
+                save_config(config)
+                self.send_json({"ok": True, "id": device["id"]})
+                return True
+            # Import: update by name, add the rest; all or nothing.
+            items = body.get("devices")
+            if not isinstance(items, list):
+                self.send_json({"error": "devices must be a list"}, 400)
+                return True
+            errors, results = [], []
+            for item in items:
+                if not isinstance(item, dict):
+                    errors.append("every device must be an object")
+                    continue
+                name = str(item.get("name") or "").strip().lower()
+                existing = next((d for d in config["devices"] if d["name"].lower() == name), None)
+                uid = existing["id"] if existing else next_device_id(config)
+                try:
+                    device = normalize_device(item, config, uid)
+                except ValueError as e:
+                    errors.append(f"{item.get('name')}: {e}")
+                    continue
+                if existing:
+                    config["devices"][config["devices"].index(existing)] = device
+                else:
+                    config["devices"].append(device)
+                results.append({"name": device["name"], "id": uid,
+                                "result": "updated" if existing else "added"})
+            if errors:
+                self.send_json({"error": "; ".join(errors), "errors": errors}, 400)
+                return True
+            save_config(config)
+        self.send_json({"ok": True, "devices": results})
+        return True
+
+    def device_put(self, path, body):
+        if path != "/api/device":
+            return False
+        if not self.authorize_owner_only():
+            self.forbidden()
+            return True
+        uid = body.get("id") if isinstance(body, dict) else None
+        with config_lock:
+            config = load_config()
+            existing = next((d for d in config["devices"] if d["id"] == uid), None)
+            if existing is None:
+                self.send_json({"error": "Unknown device"}, 400)
+                return True
+            # Fields left out keep their value; a field sent as null is cleared.
+            merged = {k: v for k, v in existing.items() if k in DEVICE_FIELDS}
+            merged.update({k: v for k, v in body.items() if k in DEVICE_FIELDS})
+            try:
+                device = normalize_device(merged, config, uid)
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return True
+            config["devices"][config["devices"].index(existing)] = device
+            save_config(config)
+        self.send_json({"ok": True})
+        return True
+
+    def device_delete(self, path):
+        if not path.startswith("/api/devices/"):
+            return False
+        try:
+            uid = int(path.rsplit("/", 1)[-1])
+        except ValueError:
+            self.send_json({"error": "Invalid device id"}, 400)
+            return True
+        with config_lock:
+            config = load_config()
+            existing = next((d for d in config["devices"] if d["id"] == uid), None)
+            if existing is None:
+                self.send_json({"error": "Unknown device"}, 400)
+                return True
+            config["devices"].remove(existing)
+            config["device_next_id"] = max(config.get("device_next_id", 1), uid + 1)
+            save_config(config)
         self.send_json({"ok": True})
         return True
 
@@ -1678,6 +1939,10 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         if path == "/api/backpacks":
             self.send_json({"backpacks": backpack_snapshot()})
+            return
+
+        if path == "/api/devices":
+            self.send_json({"devices": describe_devices(load_config())})
             return
 
         if path == "/api/uart/stream":
@@ -1754,6 +2019,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if self.backpack_post(path, body):
+            return
+        if self.device_post(path, body):
             return
 
         if path == "/api/relay/toggle":
@@ -2252,6 +2519,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self.backpack_put(path, body):
             return
+        if self.device_put(path, body):
+            return
 
         if path == "/api/relay/name":
             board_idx = body.get("board", 0)
@@ -2576,6 +2845,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if "size" in body:
                     old_size = board["size"]
                     new_size = body["size"]
+                    users = devices_using(config, board=board_idx, max_relay=new_size)
+                    if users:
+                        self.send_json({"error": f"relays past {new_size} are used by {', '.join(users)}; "
+                                                 "edit those devices first"}, 409)
+                        return
                     board["size"] = new_size
                     if new_size > old_size:
                         for i in range(old_size, new_size):
@@ -2602,6 +2876,8 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         if self.backpack_delete(path):
             return
+        if self.device_delete(path):
+            return
 
         if path.startswith("/api/boards/"):
             try:
@@ -2614,7 +2890,17 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if board_idx >= len(config["boards"]):
                     self.send_json({"error": "Invalid board"}, 400)
                     return
+                users = devices_using(config, board=board_idx)
+                if users:
+                    self.send_json({"error": f"board {board_idx} is used by {', '.join(users)}; "
+                                             "edit those devices first"}, 409)
+                    return
                 config["boards"].pop(board_idx)
+                # Boards are referenced by position: later ones move down one.
+                for d in config["devices"]:
+                    for role in ("power", "boot", "detach"):
+                        if d.get(role) and d[role]["board"] > board_idx:
+                            d[role]["board"] -= 1
                 save_config(config)
             self.send_json({"ok": True})
         elif path.startswith("/api/pwm/channels/"):
@@ -2702,6 +2988,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             with config_lock:
                 config = load_config()
+                users = devices_using(config, wpi=wpi)
+                if users:
+                    self.send_json({"error": f"GPIO wPi {wpi} is the USB mux of {', '.join(users)}; "
+                                             "edit those devices first"}, 409)
+                    return
                 before = len(config["gpios"])
                 config["gpios"] = [g for g in config["gpios"] if g["wpi"] != wpi]
                 if len(config["gpios"]) == before:

@@ -586,6 +586,36 @@ async function test(name, run) {
     assert.equal(await page.isChecked('#uartWrap'), false, 'remembered across reloads');
   });
 
+  await test('device rows switch power, open consoles, and edit the map', async page => {
+    page.on('dialog', dialog => dialog.accept());
+    await page.waitForSelector('.device-row[data-device="3"]');
+    const sw = '[data-device-power="3"]';
+    const before = await page.getAttribute(sw, 'aria-pressed');
+    await page.click(sw);
+    await page.waitForFunction(([s, b]) => document.querySelector(s).getAttribute('aria-pressed') !== b, [sw, before]);
+    assert.equal(await page.getAttribute('[data-board="0"][data-relay="2"]', 'aria-pressed'),
+                 await page.getAttribute(sw, 'aria-pressed'), 'the row and the relay card agree');
+    await page.click(sw);
+    await page.waitForFunction(([s, b]) => document.querySelector(s).getAttribute('aria-pressed') === b, [sw, before]);
+    await page.click('[data-device-console="3"]');
+    await output(page, 'ttyUSB2 demo');
+    await page.click('#editModeBtn');
+    await page.click('[data-device-add]');
+    await page.fill('#devName', 'a1n');
+    await page.selectOption('#devPower', 'B0/9');
+    await page.selectOption('#devUart', '11');
+    await page.click('[data-device-save]');
+    await page.waitForFunction(() => state.devices?.some(d => d.name === 'a1n'));
+    const id = await page.evaluate(() => state.devices.find(d => d.name === 'a1n').id);
+    await page.click(`[data-device-edit="${id}"]`);
+    await page.selectOption('#devPower', 'B0/0');
+    await page.click('[data-device-save]');
+    await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some(t => /already belongs to 't31x'/.test(t.textContent)));
+    await page.keyboard.press('Escape');
+    await page.click(`[data-device-remove="${id}"]`);
+    await page.waitForFunction(id => !state.devices.some(d => d.id === id), id);
+  });
+
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);
   process.exitCode = failed ? 1 : 0;
 })().catch(error => {

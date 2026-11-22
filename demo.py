@@ -229,6 +229,16 @@ def build_sandbox(tmp, backpack=None):
         config["backpacks"] = [{"id": 1, "name": "T31 on backpack", "host": "127.0.0.1",
                                 "mdns": backpack.name, "http_port": backpack.http_port,
                                 "console_port": backpack.console_port}]
+    config["devices"] = [
+        {"id": 1, "name": "t31x", "power": {"board": 0, "relay": 0}, "boot": {"board": 1, "relay": 0},
+         "uart": 0, "notes": "Z55, 16 MB NOR"},
+        {"id": 2, "name": "wyze-v3", "power": {"board": 0, "relay": 1}, "boot": {"board": 1, "relay": 1},
+         "usb_mux": {"wpi": 27, "host_state": "off"}, "uart": 1},
+        {"id": 3, "name": "t40xp", "power": {"board": 0, "relay": 2}, "boot": {"board": 1, "relay": 2},
+         "uart": 2, "settle_secs": 4, "notes": "256 MiB NAND"},
+    ]
+    if backpack is not None:
+        config["devices"].append({"id": 4, "name": "t23n", "backpack": 1, "notes": "on the backpack"})
     (panel / "config.json").write_text(json.dumps(config, indent=2))
     for device in DEMO_USB:
         node = tmp / "usb" / device["port"]
