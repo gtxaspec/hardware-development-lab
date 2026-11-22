@@ -14,7 +14,12 @@ Usage: `/poweroff <device>` or `/poweroff all`
 2. In parallel: `mcp__relay-panel__set_relay` its `power` relay `off` and its
    `boot` relay `off`. A device with `backpack` set instead:
    `mcp__relay-panel__backpack_action` `power-off`, then `boot-release`.
-3. Report what was switched.
+3. `mcp__relay-panel__release_device device=<device>`: it is free again.
+4. Report what was switched.
+
+A device someone else has claimed answers "in use by …": leave it alone and
+report it. For `all`, skip those and list them; never pass `force` unless the
+user asks for that device by name.
 
 Relays only. Never switch a relay whose panel name contains
 `master_name_contains` (the bench rails), and do not stop `dfu-remote` on the

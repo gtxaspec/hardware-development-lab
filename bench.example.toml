@@ -1,9 +1,10 @@
-# bench.example.toml - the shape of the bench map the skills and tools read.
+# bench.example.toml - where the panel is, and bench-wide settings for the tools.
 #
-# Copy to bench.toml (gitignored) and describe your own bench. Every value
-# here is a placeholder. `tools/bench.py list` prints your devices,
-# `tools/bench.py show <device>` one device with defaults filled in, and
-# `tools/bench.py check` compares the file with the live panel.
+# Copy to bench.toml (gitignored). Every value here is a placeholder. The
+# device map lives in the panel (edit mode, + Device); the [devices.*] tables
+# below are only an import format: `tools/bench.py push` sends them to the
+# panel, after which the panel's map is the one used. `tools/bench.py list`,
+# `show <device>` and `check` read the panel.
 
 # Base URL of the relay panel. Required.
 panel_url = "http://panel.example:8080"

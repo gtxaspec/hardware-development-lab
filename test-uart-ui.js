@@ -588,7 +588,8 @@ async function test(name, run) {
 
   await test('device rows switch power, open consoles, and edit the map', async page => {
     page.on('dialog', dialog => dialog.accept());
-    await page.waitForSelector('.device-row[data-device="3"]');
+    // aria-busy appears once live state is painted onto the row; before that it reads "off".
+    await page.waitForSelector('[data-device-power="3"][aria-busy]');
     const sw = '[data-device-power="3"]';
     const before = await page.getAttribute(sw, 'aria-pressed');
     await page.click(sw);
@@ -614,6 +615,38 @@ async function test(name, run) {
     await page.keyboard.press('Escape');
     await page.click(`[data-device-remove="${id}"]`);
     await page.waitForFunction(id => !state.devices.some(d => d.id === id), id);
+  });
+
+  await test('claims show who holds a device, and overriding one asks first', async page => {
+    let answer = true;
+    page.on('dialog', dialog => dialog.type() === 'prompt' ? dialog.accept('Tester') : (answer ? dialog.accept() : dialog.dismiss()));
+    await page.waitForSelector('[data-device-power="3"][aria-busy]');
+    await page.click('[data-device-claim-btn="3"]');
+    await page.fill('#claimNote', 'soak test');
+    await page.click('[data-claim-save]');
+    await page.waitForFunction(() => /^Yours · soak test · /.test(document.querySelector('.device-row[data-device="3"] [data-device-claim]').textContent));
+    assert.equal(await page.isVisible('[data-device-release="3"]'), true);
+    // Someone else claims t31x.
+    await page.evaluate(() => fetch('/api/claims', { method: 'POST', headers: { 'Content-Type': 'application/json',
+      'X-Bench-Holder': 'other', 'X-Bench-Holder-Label': 'Other agent' }, body: JSON.stringify({ device: 't31x', note: 'bisecting' }) }));
+    await page.waitForFunction(() => /In use by Other agent · bisecting/.test(document.querySelector('.device-row[data-device="1"]').textContent));
+    await page.waitForSelector('[data-device-power="1"][aria-busy="false"]');
+    assert.equal(await page.textContent('[data-device-claim-btn="1"]'), 'Take over');
+    assert.equal(await page.evaluate(() => document.querySelector('[data-board="0"][data-relay="0"]').classList.contains('is-claimed')), true);
+    const sw = '[data-device-power="1"]';
+    const before = await page.getAttribute(sw, 'aria-pressed');
+    answer = false;
+    await page.click(sw);
+    await pause(1500);
+    assert.equal(await page.getAttribute(sw, 'aria-pressed'), before, 'declining the override leaves the relay alone');
+    answer = true;
+    await page.click(sw);
+    await page.waitForFunction(([s, b]) => document.querySelector(s).getAttribute('aria-pressed') !== b, [sw, before]);
+    await page.click(sw);
+    await page.waitForFunction(([s, b]) => document.querySelector(s).getAttribute('aria-pressed') === b, [sw, before]);
+    await page.click('[data-device-release="3"]');
+    await page.waitForFunction(() => document.querySelector('.device-row[data-device="3"] [data-device-claim]').textContent === '');
+    await page.evaluate(() => fetch('/api/claims/t31x', { method: 'DELETE', headers: { 'X-Bench-Holder': 'other' } }));
   });
 
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);

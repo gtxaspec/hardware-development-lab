@@ -28,6 +28,9 @@ Usage:
 after seeing that board's boot banner on the port. `/uart status` lists ports
 and aliases. The log file is named after the port's alias, or ttyUSBN when it
 has none. A bench device's port is its `uart` in `tools/bench.py show <device>`.
+Reading any console is always allowed; typing into one whose device another
+holder has claimed is refused ("in use by …"): tell the user, and pass
+`force=true` only if they say so.
 A backpack's console is its name as the panel lists it (`bp:<name>` also
 works); the uart server reaches it through the panel (`RELAY_PANEL_URL`).
 

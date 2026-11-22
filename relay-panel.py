@@ -22,6 +22,9 @@ import backpacks
 BASE_DIR = Path(os.environ.get("RELAY_PANEL_DIR", "/opt/relay-panel"))
 CONFIG_FILE = BASE_DIR / "config.json"
 TOKENS_FILE = BASE_DIR / "tokens.json"
+# Who is using which device. Its own file, so claims survive a restart without
+# every lease renewal rewriting the bench's configuration.
+CLAIMS_FILE = BASE_DIR / "claims.json"
 STATIC_DIR = BASE_DIR / "static"
 LISTEN_HOST = os.environ.get("RELAY_PANEL_HOST", "::")
 LISTEN_PORT = int(os.environ.get("RELAY_PANEL_PORT", "8080"))
@@ -1165,6 +1168,7 @@ class BenchSampler:
             snap, age, covers = self.latest()
         out = dict(snap)
         out["backpacks"] = backpack_snapshot()
+        out["claims"] = describe_claims(load_config())
         out["sampled_age_s"] = round(age, 2)
         out["stale"] = age > STALE_AFTER
         # Lets a client tell whether this picture is old enough to predate a
@@ -1418,6 +1422,75 @@ def describe_devices(config):
     return out
 
 
+# --- Claims: "this device is in use", as leases that run out ---
+
+CLAIM_DEFAULT_S = 2 * 3600
+CLAIM_MAX_S = 24 * 3600
+CLAIM_MIN_S = 60
+claims_lock = threading.Lock()
+
+
+def load_claims():
+    """{device id (str): claim}, without expired ones."""
+    try:
+        claims = json.loads(CLAIMS_FILE.read_text()).get("claims", {})
+    except (OSError, ValueError):
+        claims = {}
+    now = time.time()
+    return {k: c for k, c in claims.items() if c.get("expires", 0) > now}
+
+
+def save_claims(claims):
+    tmp = CLAIMS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"claims": claims}, indent=2))
+    os.replace(tmp, CLAIMS_FILE)
+
+
+def describe_claims(config):
+    names = {str(d["id"]): d["name"] for d in config["devices"]}
+    now = time.time()
+    with claims_lock:
+        claims = load_claims()
+    return [dict(c, device_id=int(k), device=names.get(k, f"#{k}"),
+                 remaining_s=int(c["expires"] - now)) for k, c in sorted(claims.items())]
+
+
+def claim_message(device, claim):
+    since = time.strftime("%H:%M", time.localtime(claim["since"]))
+    note = f" ({claim['note']})" if claim.get("note") else ""
+    left = max(0, int(claim["expires"] - time.time()) // 60)
+    return (f"{device['name']} is in use by {claim.get('label') or claim['holder']} since {since}{note}; "
+            f"free in {left} min unless renewed. Pass force to override.")
+
+
+def devices_for(config, relays=(), board=None, wpi=None, uart=None, backpack=None):
+    """Devices a write touches: by relay, whole board, mux GPIO, console or backpack."""
+    hit = []
+    relays = set(relays)
+    for d in config["devices"]:
+        mine = {(r["board"], r["relay"]) for r in (d.get(k) for k in ("power", "boot", "detach")) if r}
+        if (mine & relays or (board is not None and any(b == board for b, _ in mine))
+                or (wpi is not None and d.get("usb_mux", {}).get("wpi") == wpi)
+                or (uart is not None and (d.get("uart") == uart
+                                          or (d.get("backpack") is not None and backpack_uart(d["backpack"]) == uart)))
+                or (backpack is not None and d.get("backpack") == backpack)):
+            hit.append(d)
+    return hit
+
+
+def parse_duration(value):
+    """Seconds from 7200, "2h", "90m" or "45s"; default, min and max applied."""
+    if value in (None, ""):
+        return CLAIM_DEFAULT_S
+    text = str(value).strip().lower()
+    scale = {"h": 3600, "m": 60, "s": 1}.get(text[-1:], 1)
+    try:
+        seconds = float(text[:-1] if text[-1:] in "hms" else text) * scale
+    except ValueError:
+        raise ValueError("duration must be seconds, or like 2h, 90m")
+    return int(min(CLAIM_MAX_S, max(CLAIM_MIN_S, seconds)))
+
+
 def discovery_loop():
     while True:
         try:
@@ -1608,6 +1681,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         if index not in self.allowed_uart_input():
             self.forbidden()
             return
+        if self.refused_by_claim(devices_for(load_config(), uart=index), body):
+            return
         raw = data.encode("utf-8", "replace")
         if len(raw) > UART_INPUT_MAX:
             self.send_json({"error": f"At most {UART_INPUT_MAX} bytes per request"}, 413)
@@ -1700,6 +1775,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return None
         if not self.authorize_backpack(uid):
             self.forbidden()
+            return None
+        if self.refused_by_claim(devices_for(load_config(), backpack=uid), body):
             return None
         return uid
 
@@ -1881,6 +1958,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if existing is None:
                 self.send_json({"error": "Unknown device"}, 400)
                 return True
+            if self.refused_by_claim([existing], body):
+                return True
             # Fields left out keep their value; a field sent as null is cleared.
             merged = {k: v for k, v in existing.items() if k in DEVICE_FIELDS}
             merged.update({k: v for k, v in body.items() if k in DEVICE_FIELDS})
@@ -1908,10 +1987,106 @@ class RelayHandler(BaseHTTPRequestHandler):
             if existing is None:
                 self.send_json({"error": "Unknown device"}, 400)
                 return True
+            if self.refused_by_claim([existing]):
+                return True
             config["devices"].remove(existing)
             config["device_next_id"] = max(config.get("device_next_id", 1), uid + 1)
             save_config(config)
         self.send_json({"ok": True})
+        return True
+
+    def holder(self):
+        """(id, label) of the caller, from X-Bench-Holder(-Label), or (None, None)."""
+        holder = (self.headers.get("X-Bench-Holder") or "").strip()[:120] or None
+        label = (self.headers.get("X-Bench-Holder-Label") or "").strip()[:120] or None
+        return holder, label or holder
+
+    def forced(self, body=None):
+        return (self.headers.get("X-Bench-Force") == "1"
+                or (isinstance(body, dict) and body.get("force") is True)
+                or parse_qs(urlparse(self.path).query).get("force", [""])[0] == "1")
+
+    def refused_by_claim(self, devices, body=None):
+        """Send 423 and return True if another holder's claim covers any of these
+        devices. The holder's own writes renew their lease."""
+        if not devices:
+            return False
+        me, _ = self.holder()
+        with claims_lock:
+            claims = load_claims()
+            blocking = [(d, claims[str(d["id"])]) for d in devices
+                        if str(d["id"]) in claims and claims[str(d["id"])]["holder"] != me]
+            if blocking and not self.forced(body):
+                device, claim = blocking[0]
+                self.send_json({"error": claim_message(device, claim), "claimed": True,
+                                "claim": dict(claim, device=device["name"], device_id=device["id"])}, 423)
+                return True
+            renewed = False
+            for d in devices:
+                claim = claims.get(str(d["id"]))
+                if claim and claim["holder"] == me:
+                    claim["expires"] = time.time() + claim["ttl"]
+                    renewed = True
+            if renewed:
+                save_claims(claims)
+        return False
+
+    def claims_route(self, method, path, body):
+        if not (path == "/api/claims" or path.startswith("/api/claims/")):
+            return False
+        config = load_config()
+        if method == "GET":
+            self.send_json({"claims": describe_claims(config)})
+            return True
+        ref = path.rsplit("/", 1)[-1] if path != "/api/claims" else str(body.get("device", ""))
+        device = next((d for d in config["devices"]
+                       if ref and (str(d["id"]) == ref or d["name"].lower() == ref.lower())), None)
+        if device is None:
+            self.send_json({"error": f"no device {ref!r}"}, 400)
+            return True
+        allowed = (self.authorize_backpack(device["backpack"]) if device.get("backpack") is not None
+                   else self.authorize_relay(device["power"]["board"], device["power"]["relay"]))
+        if not allowed:
+            self.forbidden()
+            return True
+        me, label = self.holder()
+        key = str(device["id"])
+        with claims_lock:
+            claims = load_claims()
+            current = claims.get(key)
+            if method == "DELETE":
+                if current is None:
+                    self.send_json({"ok": True, "message": f"{device['name']} was not claimed"}, changes_bench=False)
+                    return True
+                if current["holder"] != me and not self.forced(body):
+                    self.send_json({"error": claim_message(device, current), "claimed": True}, 423)
+                    return True
+                del claims[key]
+                save_claims(claims)
+                self.send_json({"ok": True, "message": f"{device['name']} is free"}, changes_bench=False)
+                return True
+            if not me:
+                self.send_json({"error": "a claim needs a holder: send X-Bench-Holder (and -Label)"}, 400)
+                return True
+            if current and current["holder"] != me and not self.forced(body):
+                self.send_json({"error": claim_message(device, current), "claimed": True}, 423)
+                return True
+            try:
+                ttl = parse_duration(body.get("duration", current["ttl"] if current and current["holder"] == me else None))
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
+                return True
+            now = time.time()
+            keep = current and current["holder"] == me
+            claims[key] = {"holder": me, "label": label,
+                           "note": str(body.get("note", current.get("note", "") if keep else "") or "")[:200],
+                           "since": current["since"] if keep else now, "ttl": ttl, "expires": now + ttl}
+            save_claims(claims)
+        took = current and current["holder"] != me
+        self.send_json({"ok": True, "device": device["name"], "expires_in_s": ttl,
+                        "message": (f"took {device['name']} over from {current.get('label') or current['holder']}"
+                                    if took else f"{device['name']} is yours for {ttl // 60} min")},
+                       changes_bench=False)
         return True
 
     def do_GET(self):
@@ -1943,6 +2118,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         if path == "/api/devices":
             self.send_json({"devices": describe_devices(load_config())})
+            return
+
+        if self.claims_route("GET", path, {}):
             return
 
         if path == "/api/uart/stream":
@@ -2022,6 +2200,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         if self.device_post(path, body):
             return
+        if self.claims_route("POST", path, body if isinstance(body, dict) else {}):
+            return
 
         if path == "/api/relay/toggle":
             board_idx = body.get("board", 0)
@@ -2032,6 +2212,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             config = load_config()
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
+                return
+            if self.refused_by_claim(devices_for(config, relays=[(board_idx, relay_num)]), body):
                 return
             board = config["boards"][board_idx]
             try:
@@ -2062,6 +2244,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
+            if self.refused_by_claim(devices_for(config, relays=[(board_idx, relay_num)]), body):
+                return
             board = config["boards"][board_idx]
             try:
                 set_relay(board["bus"], board["address"], relay_num, state)
@@ -2090,6 +2274,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             board = config["boards"][board_idx]
             if not self.authorize_board_bulk(board_idx, board["size"]):
                 self.forbidden()
+                return
+            if self.refused_by_claim(devices_for(config, board=board_idx), body):
                 return
             set_all(board["bus"], board["address"], board["size"], state)
             self.send_json({
@@ -2190,6 +2376,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if entry is None:
                     self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
                     return
+            if self.refused_by_claim(devices_for(config, wpi=wpi), body):
+                return
             try:
                 new_state = gpio_toggle_pin(wpi)
             except Exception as e:
@@ -2228,6 +2416,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if entry is None:
                     self.send_json({"error": f"GPIO wPi {wpi} not configured"}, 400)
                     return
+            if self.refused_by_claim(devices_for(config, wpi=wpi), body):
+                return
             try:
                 gpio_write(wpi, state)
             except Exception as e:
@@ -2502,6 +2692,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             board = config["boards"][board_idx]
             if not self.authorize_board_bulk(board_idx, board["size"]):
                 self.forbidden()
+                return
+            if self.refused_by_claim(devices_for(config, board=board_idx), body):
                 return
             try:
                 i2c_init_board(board["bus"], board["address"])
@@ -2870,6 +3062,9 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        # Releasing a claim is the holder's, not the owner's.
+        if self.claims_route("DELETE", path, {}):
+            return
         if not self.authorize_owner_only():
             self.forbidden()
             return

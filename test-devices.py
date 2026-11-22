@@ -31,7 +31,9 @@ CONFIG = {
 }
 
 
-class DeviceTests(unittest.TestCase):
+class PanelFixture(unittest.TestCase):
+    """The server on a temp config with fake boards; no tests of its own."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="relay-panel-device-test-")
         self.addCleanup(self.temp.cleanup)
@@ -60,6 +62,8 @@ class DeviceTests(unittest.TestCase):
     def devices(self):
         return {d["name"]: d for d in self.call("GET", "/api/devices")[1]["devices"]}
 
+
+class DeviceTests(PanelFixture):
     def test_validation(self):
         ok = {"name": "t31x", "power": "B0/10", "boot": {"board": 1, "relay": 8}, "uart": "ttyUSB0",
               "usb_mux": {"wpi": 27}, "settle_secs": 4, "notes": "Z55"}
@@ -142,6 +146,106 @@ class DeviceTests(unittest.TestCase):
                          ({"board": 0, "relay": 13}, "ttyUSB9", 3))
         self.assertIn("t41nq", run("list").stdout)
         self.assertEqual(run("show", "nope").returncode, 1)
+
+
+
+class ClaimTests(PanelFixture):
+    """Claims on top of the same server and fake bench (relay writes are stubbed)."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("set_relay", "toggle_relay", "set_all", "i2c_init_board", "gpio_write", "gpio_toggle_pin"):
+            patcher = patch.object(rp, name, return_value=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(rp, "CLAIMS_FILE", Path(self.temp.name) / "claims.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.call("POST", "/api/devices", {"name": "t31x", "power": "B0/10", "boot": "B1/8", "uart": 0,
+                                           "usb_mux": 27})
+
+    def as_(self, holder, method, path, body=None, force=False):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
+        self.addCleanup(connection.close)
+        headers = {"Content-Type": "application/json"}
+        if holder:
+            headers.update({"X-Bench-Holder": holder, "X-Bench-Holder-Label": f"{holder} label"})
+        if force:
+            headers["X-Bench-Force"] = "1"
+        connection.request(method, path, json.dumps(body) if body is not None else None, headers)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+
+    def claim(self):
+        return {c["device"]: c for c in self.call("GET", "/api/claims")[1]["claims"]}
+
+    def test_claim_blocks_others_and_force_overrides(self):
+        status, body = self.as_("alice", "POST", "/api/claims", {"device": "t31x", "note": "flashing", "duration": "30m"})
+        self.assertEqual(status, 200, body)
+        c = self.claim()["t31x"]
+        self.assertEqual((c["holder"], c["label"], c["note"]), ("alice", "alice label", "flashing"))
+        self.assertTrue(1700 < c["remaining_s"] <= 1800)
+        relay = {"board": 0, "relay": 10, "state": True}
+        self.assertEqual(self.as_("alice", "POST", "/api/relay/set", relay)[0], 200)
+        status, body = self.as_("bob", "POST", "/api/relay/set", relay)
+        self.assertEqual(status, 423)
+        self.assertIn("t31x is in use by alice label", body["error"])
+        self.assertIn("(flashing)", body["error"])
+        self.assertEqual(self.as_(None, "POST", "/api/relay/set", relay)[0], 423, "no holder is not the holder")
+        self.assertEqual(self.as_("bob", "POST", "/api/relay/set", relay, force=True)[0], 200)
+        self.assertEqual(self.as_("bob", "POST", "/api/relay/set", dict(relay, force=True))[0], 200)
+        # Every way to switch the device is covered; unrelated relays are not.
+        for path, body in [("/api/relay/toggle", {"board": 1, "relay": 8}), ("/api/board/all", {"board": 0, "state": False}),
+                           ("/api/board/reset", {"board": 1}), ("/api/gpio/set", {"wpi": 27, "state": True}),
+                           ("/api/gpio/toggle", {"wpi": 27})]:
+            self.assertEqual(self.as_("bob", "POST", path, body)[0], 423, path)
+        self.assertEqual(self.as_("bob", "POST", "/api/relay/set", {"board": 0, "relay": 3, "state": True})[0], 200)
+        self.assertEqual(self.as_("bob", "PUT", "/api/device", {"id": 1, "notes": "x"})[0], 423)
+        self.assertEqual(self.as_("bob", "POST", "/api/claims", {"device": "t31x"})[0], 423)
+        self.assertEqual(self.as_("bob", "DELETE", "/api/claims/t31x")[0], 423)
+
+    def test_own_actions_renew_the_lease_and_release_frees(self):
+        self.as_("alice", "POST", "/api/claims", {"device": "t31x", "duration": "10m"})
+        claims = json.loads((Path(self.temp.name) / "claims.json").read_text())
+        claims["claims"]["1"]["expires"] -= 400
+        (Path(self.temp.name) / "claims.json").write_text(json.dumps(claims))
+        self.assertLess(self.claim()["t31x"]["remaining_s"], 300)
+        self.as_("alice", "POST", "/api/relay/set", {"board": 0, "relay": 10, "state": False})
+        self.assertGreater(self.claim()["t31x"]["remaining_s"], 590, "using the device renews it")
+        self.assertEqual(self.as_("alice", "DELETE", "/api/claims/1")[0], 200)
+        self.assertEqual(self.claim(), {})
+        self.assertEqual(self.as_("bob", "POST", "/api/relay/set", {"board": 0, "relay": 10, "state": True})[0], 200)
+
+    def test_expiry_takeover_and_limits(self):
+        self.as_("alice", "POST", "/api/claims", {"device": "t31x"})
+        self.assertTrue(7100 < self.claim()["t31x"]["remaining_s"] <= 7200, "default is 2 h")
+        self.as_("alice", "POST", "/api/claims", {"device": "t31x", "duration": "99h"})
+        self.assertLessEqual(self.claim()["t31x"]["remaining_s"], 24 * 3600, "capped at 24 h")
+        claims = json.loads((Path(self.temp.name) / "claims.json").read_text())
+        claims["claims"]["1"]["expires"] = 1
+        (Path(self.temp.name) / "claims.json").write_text(json.dumps(claims))
+        self.assertEqual(self.claim(), {}, "an expired claim is no claim")
+        self.assertEqual(self.as_("bob", "POST", "/api/relay/set", {"board": 0, "relay": 10, "state": True})[0], 200)
+        self.as_("alice", "POST", "/api/claims", {"device": "t31x", "note": "soak"})
+        status, body = self.as_("bob", "POST", "/api/claims", {"device": "t31x", "note": "mine now"}, force=True)
+        self.assertIn("took t31x over from alice label", body["message"])
+        self.assertEqual(self.claim()["t31x"]["holder"], "bob")
+        self.assertEqual(self.as_(None, "POST", "/api/claims", {"device": "t31x"}, force=True)[0], 400,
+                         "a claim needs a holder")
+        self.assertEqual(self.as_("bob", "POST", "/api/claims", {"device": "t31x", "duration": "soon"})[0], 400)
+
+    def test_console_input_and_backpacks_are_covered(self):
+        self.call("POST", "/api/devices", {"name": "bpcam", "backpack": 1})
+        self.as_("alice", "POST", "/api/claims", {"device": "t31x"})
+        self.as_("alice", "POST", "/api/claims", {"device": "bpcam"})
+        status, body = self.as_("bob", "POST", "/api/uart/input", {"uart": 0, "data": "x"})
+        self.assertEqual(status, 423)
+        status, body = self.as_("alice", "POST", "/api/uart/input", {"uart": 0, "data": "x"})
+        self.assertEqual(status, 409, "the holder gets past the claim (then finds no viewer)")
+        with patch.object(rp.backpack_monitor, "unit", return_value=object()):
+            status, body = self.as_("bob", "POST", "/api/backpack/action", {"id": 1, "action": "bootrom"})
+        self.assertEqual(status, 423)
+        self.assertIn("bpcam is in use", body["error"])
 
 
 if __name__ == "__main__":

@@ -91,7 +91,8 @@ class Pi:
             sys.exit(f"cannot reach {self.host}: {r.stderr.strip() or 'ssh failed'}")
 
     def api(self, method, path, body=None, check=True):
-        c = f"curl -s -X {method} -H 'Content-Type: application/json'"
+        # Restoring what a restart switched off takes nothing from a claim's holder.
+        c = f"curl -s -X {method} -H 'Content-Type: application/json' -H 'X-Bench-Force: 1'"
         if body is not None:
             c += f" -d {json.dumps(json.dumps(body))}"
         out = self.run(f"{c} http://localhost:8080{path}", check)

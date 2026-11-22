@@ -2,6 +2,7 @@
 """MCP server for the Relay Control Panel."""
 
 import os
+import socket
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -32,14 +33,31 @@ mcp = MCPServer(
         "address is what thingino-dfu --host flashes it through. "
         "Devices name what each camera uses (relays, USB mux GPIO, console or "
         "backpack): list_devices is the bench's device map. "
+        "Bench devices are shared between agents and people: claim_device before "
+        "working on one, release_device when done. Switching a device someone "
+        "else has claimed is refused with who holds it and why; the switching "
+        "tools take force=true to override, which is for after asking the user, "
+        "not a way round a busy device. "
         "Adding, removing and re-addressing boards and PWM chips is deliberately "
         "not exposed here - that is physical setup, done in the web UI."
     ),
 )
 
 
-def api(method: str, path: str, body: dict | None = None, timeout: float = 10) -> dict:
-    with httpx.Client(base_url=BASE_URL, timeout=timeout) as client:
+# Who this session is, for claims. Every MCP server a Claude session starts is
+# a child of that session's process, so the parent pid names the session: the
+# relay and uart servers of one session count as one holder without setup.
+HOLDER = os.environ.get("BENCH_HOLDER_ID") or f"{socket.gethostname()}:{os.getppid()}"
+HOLDER_LABEL = os.environ.get("BENCH_HOLDER") or (
+    f"{socket.gethostname()} {os.path.basename(os.getcwd()) or '/'} (session {os.getppid()})")
+
+
+def api(method: str, path: str, body: dict | None = None, timeout: float = 10,
+        force: bool = False) -> dict:
+    headers = {"X-Bench-Holder": HOLDER, "X-Bench-Holder-Label": HOLDER_LABEL}
+    if force:
+        headers["X-Bench-Force"] = "1"
+    with httpx.Client(base_url=BASE_URL, timeout=timeout, headers=headers) as client:
         if method == "GET":
             r = client.get(path)
         elif method == "POST":
@@ -66,7 +84,7 @@ def list_relays() -> dict:
 
 
 @mcp.tool()
-def toggle_relay(board: int, relay: int) -> dict:
+def toggle_relay(board: int, relay: int, force: bool = False) -> dict:
     """Toggle a single relay and return its new state.
 
     Args:
@@ -75,11 +93,11 @@ def toggle_relay(board: int, relay: int) -> dict:
 
     Returns the relay number, name, and new state ('on' or 'off').
     """
-    return api("POST", "/api/relay/toggle", {"board": board, "relay": relay})
+    return api("POST", "/api/relay/toggle", {"board": board, "relay": relay}, force=force)
 
 
 @mcp.tool()
-def set_relay(board: int, relay: int, state: str) -> dict:
+def set_relay(board: int, relay: int, state: str, force: bool = False) -> dict:
     """Set a relay to a specific state.
 
     Args:
@@ -93,27 +111,27 @@ def set_relay(board: int, relay: int, state: str) -> dict:
         "board": board,
         "relay": relay,
         "state": state == "on",
-    })
+    }, force=force)
 
 
 @mcp.tool()
-def all_on(board: int) -> dict:
+def all_on(board: int, force: bool = False) -> dict:
     """Turn all relays on a board ON.
 
     Args:
         board: Board index (0-based)
     """
-    return api("POST", "/api/board/all", {"board": board, "state": True})
+    return api("POST", "/api/board/all", {"board": board, "state": True}, force=force)
 
 
 @mcp.tool()
-def all_off(board: int) -> dict:
+def all_off(board: int, force: bool = False) -> dict:
     """Turn all relays on a board OFF.
 
     Args:
         board: Board index (0-based)
     """
-    return api("POST", "/api/board/all", {"board": board, "state": False})
+    return api("POST", "/api/board/all", {"board": board, "state": False}, force=force)
 
 
 @mcp.tool()
@@ -144,7 +162,7 @@ def rename_board(board: int, name: str) -> dict:
 
 
 @mcp.tool()
-def reset_board(board: int) -> dict:
+def reset_board(board: int, force: bool = False) -> dict:
     """Reset a board: re-initialize I2C direction registers and set all relays OFF.
 
     Use this if I2C communication seems stuck or relays are in an unknown state.
@@ -152,7 +170,7 @@ def reset_board(board: int) -> dict:
     Args:
         board: Board index (0-based)
     """
-    return api("POST", "/api/board/reset", {"board": board})
+    return api("POST", "/api/board/reset", {"board": board}, force=force)
 
 
 @mcp.tool()
@@ -196,7 +214,7 @@ def remove_gpio(wpi: int) -> dict:
 
 
 @mcp.tool()
-def set_gpio(wpi: int, state: str) -> dict:
+def set_gpio(wpi: int, state: str, force: bool = False) -> dict:
     """Set a GPIO pin HIGH ('on') or LOW ('off').
 
     Args:
@@ -206,17 +224,17 @@ def set_gpio(wpi: int, state: str) -> dict:
     return api("POST", "/api/gpio/set", {
         "wpi": wpi,
         "state": state == "on",
-    })
+    }, force=force)
 
 
 @mcp.tool()
-def toggle_gpio(wpi: int) -> dict:
+def toggle_gpio(wpi: int, force: bool = False) -> dict:
     """Toggle a GPIO pin and return its new state.
 
     Args:
         wpi: wiringPi pin number of a configured GPIO
     """
-    return api("POST", "/api/gpio/toggle", {"wpi": wpi})
+    return api("POST", "/api/gpio/toggle", {"wpi": wpi}, force=force)
 
 
 @mcp.tool()
@@ -530,7 +548,7 @@ def list_backpacks() -> dict:
 
 
 @mcp.tool()
-def backpack_action(backpack: str, action: str) -> dict:
+def backpack_action(backpack: str, action: str, force: bool = False) -> dict:
     """Operate a backpack's camera.
 
     Actions: power-on, power-off, power-cycle, boot-hold, boot-release, and
@@ -546,11 +564,11 @@ def backpack_action(backpack: str, action: str) -> dict:
     uid = _backpack_id(backpack)
     if isinstance(uid, dict):
         return uid
-    return api("POST", "/api/backpack/action", {"id": uid, "action": action}, timeout=40)
+    return api("POST", "/api/backpack/action", {"id": uid, "action": action}, timeout=40, force=force)
 
 
 @mcp.tool()
-def backpack_setting(backpack: str, setting: str, value: str) -> dict:
+def backpack_setting(backpack: str, setting: str, value: str, force: bool = False) -> dict:
     """Change a backpack setting, saved on the unit.
 
     bootsel = low | high: how the SoC's BOOTSEL line asks for USB boot.
@@ -565,7 +583,7 @@ def backpack_setting(backpack: str, setting: str, value: str) -> dict:
     uid = _backpack_id(backpack)
     if isinstance(uid, dict):
         return uid
-    return api("POST", "/api/backpack/setting", {"id": uid, setting: value}, timeout=20)
+    return api("POST", "/api/backpack/setting", {"id": uid, setting: value}, timeout=20, force=force)
 
 
 
@@ -617,7 +635,7 @@ def set_device(name: str, power: str | None = None, boot: str | None = None,
 
 
 @mcp.tool()
-def remove_device(name: str) -> dict:
+def remove_device(name: str, force: bool = False) -> dict:
     """Remove a device from the map (its relays and console stay as they are).
 
     Args:
@@ -627,7 +645,46 @@ def remove_device(name: str) -> dict:
                   if d["name"].lower() == name.lower()), None)
     if match is None:
         return {"error": f"no device {name!r}"}
-    return api("DELETE", f"/api/devices/{match['id']}")
+    return api("DELETE", f"/api/devices/{match['id']}", force=force)
+
+
+
+@mcp.tool()
+def claim_device(device: str, note: str = "", duration: str = "2h", force: bool = False) -> dict:
+    """Mark a device in use by this session, so other agents and people see it
+    and their switching is refused. Claiming again renews it or changes the note.
+
+    The claim is a lease: it ends after `duration` unless renewed, and every
+    action this session takes on the device renews it, so an agent that stops
+    without releasing does not hold a device forever.
+
+    Args:
+        device: Device name (from list_devices)
+        note: What you are doing, shown to others, e.g. "flashing U-Boot"
+        duration: Lease length: like 2h, 90m, 8h (1 min to 24 h; default 2h)
+        force: Take the device over from another holder (ask the user first)
+    """
+    return api("POST", "/api/claims", {"device": device, "note": note, "duration": duration}, force=force)
+
+
+@mcp.tool()
+def release_device(device: str, force: bool = False) -> dict:
+    """Mark a device free again.
+
+    Args:
+        device: Device name
+        force: Release another holder's claim (ask the user first)
+    """
+    return api("DELETE", f"/api/claims/{device}", force=force)
+
+
+@mcp.tool()
+def list_claims() -> dict:
+    """Which devices are in use, by whom, doing what, and for how much longer.
+    Your own claims carry this session's holder id."""
+    answer = api("GET", "/api/claims")
+    answer["you"] = HOLDER
+    return answer
 
 
 if __name__ == "__main__":

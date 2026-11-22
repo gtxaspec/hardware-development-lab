@@ -27,6 +27,12 @@ LOG_DIR = "/tmp/uart-logs"
 # panel: a backpack serves one console client at a time, so connecting to it
 # directly would keep taking the console from the panel and back.
 PANEL_URL = os.environ.get("RELAY_PANEL_URL", "").rstrip("/")
+# The same holder as this session's relay-panel server (both are children of
+# the session's process), so claims made there cover typing here.
+HOLDER = os.environ.get("BENCH_HOLDER_ID") or f"{socket.gethostname()}:{os.getppid()}"
+HOLDER_LABEL = os.environ.get("BENCH_HOLDER") or (
+    f"{socket.gethostname()} {os.path.basename(os.getcwd()) or '/'} (session {os.getppid()})")
+HOLDER_HEADERS = {"X-Bench-Holder": HOLDER, "X-Bench-Holder-Label": HOLDER_LABEL}
 ALIASES_FILE = os.environ.get(
     "UART_ALIASES", os.path.join(os.path.dirname(os.path.abspath(__file__)), "aliases.json"))
 
@@ -72,6 +78,33 @@ def _parse_index(ref) -> int | None:
 
 
 _panel_cache = {"at": 0.0, "consoles": []}
+
+
+def _claim_refusal(dev: dict, force: bool) -> str | None:
+    """Why typing into this console is refused, when another holder has
+    claimed the device it belongs to; None to go ahead."""
+    if force or not PANEL_URL:
+        return None
+    index = dev.get("panel")
+    if index is None and dev["key"].startswith("ttyUSB"):
+        index = int(dev["key"][6:])
+    if index is None:
+        return None
+    try:
+        with urllib.request.urlopen(f"{PANEL_URL}/api/devices", timeout=5) as r:
+            devices = json.load(r).get("devices", [])
+        with urllib.request.urlopen(f"{PANEL_URL}/api/claims", timeout=5) as r:
+            claims = json.load(r).get("claims", [])
+    except (OSError, ValueError):
+        return None  # a panel that does not answer cannot hold anyone's claim
+    owners = {d["id"] for d in devices if d.get("uart") == index}
+    for c in claims:
+        if c["device_id"] in owners and c["holder"] != HOLDER:
+            note = f" ({c['note']})" if c.get("note") else ""
+            return (f"{c['device']} is in use by {c.get('label') or c['holder']}{note}; "
+                    f"free in {max(0, c['remaining_s']) // 60} min unless renewed. Pass force=true to "
+                    "type anyway (ask the user first).")
+    return None
 
 
 def _panel_consoles() -> list:
@@ -365,8 +398,11 @@ class PanelConnection(DeviceConnection):
         if not self.alive:
             self.connect()
         body = json.dumps({"uart": self.index, "data": data.decode("utf-8", errors="replace")}).encode()
+        headers = {"Content-Type": "application/json", **HOLDER_HEADERS}
+        if getattr(self, "force", False):
+            headers["X-Bench-Force"] = "1"
         request = urllib.request.Request(f"{PANEL_URL}/api/uart/input", data=body, method="POST",
-                                         headers={"Content-Type": "application/json"})
+                                         headers=headers)
         try:
             urllib.request.urlopen(request, timeout=10).read()
         except urllib.error.HTTPError as e:
@@ -411,7 +447,7 @@ mcp = MCPServer("uart")
 
 @mcp.tool()
 def write_uart(
-    device: str, data: str, repeat: int = 1, interval: float = 0.0
+    device: str, data: str, repeat: int = 1, interval: float = 0.0, force: bool = False
 ) -> str:
     """Send data to a device's UART.
 
@@ -423,14 +459,19 @@ def write_uart(
         device: Port (5, ttyUSB5 or 3005) or an alias from list_uart_devices
         data: String to send (escape sequences supported)
         repeat: Send the data this many times (default 1)
+        force: Type into a console whose device another holder has claimed
         interval: Seconds between repeats (default 0 = no delay)
     """
     try:
         dev = _resolve(device)
     except ValueError as e:
         return str(e)
+    refusal = _claim_refusal(dev, force)
+    if refusal:
+        return refusal
     try:
         conn = _get_conn(dev)
+        conn.force = force  # carried to the panel for backpack consoles
         raw = _decode_escapes(data)
         if len(raw) > 1 and not raw.endswith((b"\r", b"\n")):
             raw += b"\r"
@@ -450,6 +491,7 @@ def uart_expect(
     pattern: str,
     timeout: float = 5.0,
     send: str | None = None,
+    force: bool = False,
 ) -> str:
     """Send data (optional) and wait for a regex pattern in UART output.
 
@@ -462,13 +504,18 @@ def uart_expect(
         timeout: Max seconds to wait (default 5)
         send: Optional data to send first (escape sequences supported).
               A carriage return is appended unless it ends with \\r/\\n.
+        force: Send into a console whose device another holder has claimed
     """
     try:
         dev = _resolve(device)
     except ValueError as e:
         return str(e)
+    refusal = _claim_refusal(dev, force) if send is not None else None
+    if refusal:
+        return refusal
     try:
         conn = _get_conn(dev)
+        conn.force = force  # carried to the panel for backpack consoles
         mark = None
         if send is not None:
             raw = _decode_escapes(send)
@@ -486,7 +533,7 @@ def uart_expect(
 
 @mcp.tool()
 def uart_interact(device: str, script: list[dict], timeout: float = 30.0,
-                  clear: bool = False) -> str:
+                  clear: bool = False, force: bool = False) -> str:
     """Execute a multi-step UART interaction.
 
     Each step is a dict with optional keys:
@@ -515,13 +562,18 @@ def uart_interact(device: str, script: list[dict], timeout: float = 30.0,
         script: List of step dicts
         timeout: Max seconds per wait/expect (default 30)
         clear: Clear UART buffer before starting (default false)
+        force: Send into a console whose device another holder has claimed
     """
     try:
         dev = _resolve(device)
     except ValueError as e:
         return str(e)
+    refusal = _claim_refusal(dev, force) if any("send" in step or "send_until" in step for step in script) else None
+    if refusal:
+        return refusal
     try:
         conn = _get_conn(dev)
+        conn.force = force  # carried to the panel for backpack consoles
         if clear:
             conn.clear_buffer()
         transcript = ""

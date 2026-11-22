@@ -25,9 +25,10 @@ This skill lives at `<repo>/skills/flash/` (resolve symlinks with
 <repo>/tools/bench.py show <device>
 ```
 
-It prints `power` and `boot` (`board`/`relay`), optional `usb_mux`, `detach`
-and `uart`, plus `settle_secs`, `enumerate_timeout_secs`, `bootrom_vid_pid`,
-`dfu_host` and `notes`. Read the notes. Unknown device: `bench.py list`.
+It prints the device from the panel's device map: `power` and `boot`
+(`board`/`relay`), optional `usb_mux`, `detach` and `uart`, plus `settle_secs`,
+`enumerate_timeout_secs`, `bootrom_vid_pid`, `dfu_host` and `notes`. Read the
+notes. Unknown device: `bench.py list` (or `mcp__relay-panel__list_devices`).
 
 A device with `backpack` set is on a thingino backpack instead of relays: its
 `dfu_host` is the unit itself and its `uart` is the unit's console name. Use
@@ -35,6 +36,15 @@ A device with `backpack` set is on a thingino backpack instead of relays: its
 
 Never switch a relay whose panel name contains `master_name_contains`: those
 are the bench rails. Only the device's own relays move.
+
+## Claim it first
+
+Bench devices are shared with other agents and people.
+`mcp__relay-panel__claim_device device=<device> note="flashing <image>"`
+before touching anything. If the answer is "in use by …", **stop and tell the
+user who holds it and why**; never pass `force` unless the user says so. Your
+own switching renews the claim while you work. Leave the claim in place
+afterwards if the user will keep using the device; `/poweroff` releases it.
 
 ## Enter the bootrom
 

@@ -188,15 +188,16 @@ In order:
 4. **Dev machine**: the MCP venv and Bun packages, then register all three
    servers in `~/.mcp.json` ([MCP server](#mcp-server),
    [UART and USB MCP servers](#uart-and-usb-mcp-servers)).
-5. **Bench map**: `bench.toml` and `tools/bench.py check`
-   ([Skills and the bench map](#skills-and-the-bench-map)).
+5. **Devices**: in edit mode, **+ Device** names each camera's relays, mux GPIO
+   and console ([Devices and claims](#devices-and-claims)); or describe them in
+   `bench.toml` and `tools/bench.py push` them. Then `tools/bench.py check`.
 6. **Consoles**: power each board with `tools/uart-listen-all.py` running, then
-   put the port it spoke on into that device's `uart` in `bench.toml`.
+   set the port it spoke on as that device's console.
 7. **Skills**: link them in and try `/poweroff all`, then `/bootstrap <device>`.
 8. **Backpacks** (optional): flash thingino-backpack firmware onto an ESP32 per
    camera and join it to the network; the panel adds it by itself within a
-   minute ([Backpacks](#backpacks)). In `bench.toml`, give that camera
-   `backpack = "<name>"` instead of relays.
+   minute ([Backpacks](#backpacks)). Give that camera's device the backpack
+   instead of relays.
 
 Before exposing the panel beyond your own network, read [Access](#access).
 
@@ -207,15 +208,15 @@ relay-panel.py       the server: HTTP API + hardware access. Pure stdlib.
 uart_stream.py       on-demand TCP console fan-out and input
 backpacks.py         thingino backpacks: polling, actions, mDNS discovery
 static/index.html    the whole web UI, single file, no build step
-mcp-server.py        MCP server exposing the API as tools (33 of them)
+mcp-server.py        MCP server exposing the API as tools (39 of them)
 mcp/uart/            MCP server for the UART consoles, straight over ser2net
 mcp/usb-hotplug/     MCP server pushing USB plug/unplug events (Bun)
 pi/                  ser2net config, CH348 port ordering, dfu-remote unit for the Pi
-tools/bench.py       reads bench.toml: list devices, show one, check against the panel
+tools/bench.py       the panel's device map: list, show one, check, push bench.toml's
 tools/uart-listen-all.py  find which board is on which port
 tools/uart-monitor   terminal console viewer: pick a port, or watch them all labelled
 skills/              Claude Code skills: /flash, /bootstrap, /poweroff, /uart, ...
-bench.example.toml   the bench map format; copy to bench.toml (gitignored)
+bench.example.toml   bench settings (+ devices to push); copy to bench.toml (gitignored)
 docs/bench.md        how the parts fit together, and bench habits
 deploy.py            state-preserving deploy to the Orange Pi
 demo.py              runs the panel against stubbed hardware
@@ -225,6 +226,7 @@ test-regressions.py  file serving, relay races, sample ordering, startup and dem
 test-ui-reliability.js browser regressions; starts its own simulated panel
 test-uart.py         UART fan-out, reconnect, cleanup and access-control tests
 test-backpacks.py    backpack polling, actions, access, discovery, console takeover
+test-devices.py      device map validation and import, claims and their enforcement
 test-uart-ui.js      browser console tests; starts simulated UARTs via demo.py
 test-hardware.py     hardware tests, drives the real PCA9685
 relay-panel.service  systemd unit
@@ -411,7 +413,8 @@ All optional; the defaults suit a normal install.
 | `UART_COUNT` | `24` | uart MCP: number of UART ports |
 | `UART_ALIASES` | `mcp/uart/aliases.json` | uart MCP: optional port names |
 | `USB_HOTPLUG_HOST` | `root@localhost` | usb-hotplug MCP: ssh target that runs `udevadm`/`lsusb` |
-| `BENCH_TOML` | `bench.toml` at the repo root | `tools/bench.py` and the skills: the bench map |
+| `BENCH_TOML` | `bench.toml` at the repo root | `tools/bench.py` and the skills: the panel's address and bench settings |
+| `BENCH_HOLDER` | machine, folder and session | MCP servers: the name others see on your claims |
 | `RELAY_PANEL_SSH` | *(none)* | `deploy.py`: ssh target, usually set in `.env` |
 | `RELAY_PANEL_FLASH_PORT` | `5050` | `deploy.py`: flashing daemon's port; `0` disables |
 | `RELAY_PANEL_DFU_PID` | `4d44` | `deploy.py`: USB pid meaning "in DFU"; empty disables |
@@ -443,8 +446,43 @@ once the bootrom enumerates), **Power cycle**, the USB devices on its port, and
   than taking it back.
 - **Flashing** goes straight to the unit: its card shows the `dfu` address for
   `thingino-dfu --host`.
-- In `bench.toml`, a device with `backpack = "<name>"` replaces its power and
-  boot relays; the skills then use the unit's `bootrom` action and DFU address.
+- A [device](#devices-and-claims) on a backpack names the backpack instead of
+  power and boot relays; the skills then use the unit's `bootrom` action and
+  DFU address.
+
+## Devices and claims
+
+**Devices** say what the bench's hardware is for: one per camera, naming its
+power, boot-pin and detach relays, its USB mux GPIO and console, or the
+backpack it sits on, with notes and per-device timing. The panel holds this
+map, so every browser, agent and skill reads the same one. They are listed at
+the top of the page with a power switch, the console, and in edit mode
+**+ Device**, Edit and Remove; `GET /api/devices`, `list_devices` and
+`tools/bench.py list` show the same thing. A relay belongs to one device, and a
+board, GPIO or backpack a device uses cannot be removed until that device is
+edited.
+
+**Claims** say a device is in use, and by whom: on a bench several agents and
+people share, "on" does not mean "free". Claim a device with a note on what you
+are doing and it shows "In use by … · flashing U-Boot · 1h 40m left" to
+everyone; anyone else switching its relays, mux, console input or backpack, or
+editing it, is refused with that message. They can still pass `force` (the page
+asks "Override just this once?"), so a stuck claim never locks anyone out;
+**Take over** moves the claim to them.
+
+- **A claim is a lease.** It ends after its duration (default 2 h, at most
+  24 h) unless renewed, and the holder's own switching renews it, so a session
+  that stops without releasing frees the device on its own.
+- **Holders.** Each browser gets an id and asks for a name the first time it
+  claims. Each Claude Code session is one holder for both its MCP servers
+  without setup (the servers share the session as their parent process);
+  `BENCH_HOLDER` sets the label others see. Other clients send
+  `X-Bench-Holder` and `X-Bench-Holder-Label`.
+- **Reading is never blocked**: state, consoles, logs.
+- **Not security.** A claim keeps honest users from tripping over each other;
+  anyone may force. Access control is [Access](#access)'s job.
+- Claims live in `claims.json` next to `config.json`, so they survive a
+  restart. `deploy.py` forces through them when it restores the bench after one.
 
 ## Access
 
@@ -682,6 +720,7 @@ python3 test-regressions.py                      # file serving, relay races, sa
 node test-ui-reliability.js                      # Playwright, automatically starts demo.py
 python3 test-uart.py                             # local TCP fixtures, no hardware
 python3 test-backpacks.py                        # a simulated backpack, no hardware
+python3 test-devices.py                          # device map and claims, no hardware
 node test-uart-ui.js                             # Playwright, simulated consoles only
 ssh root@your-pi python3 - < test-hardware.py    # 63 checks, drives the real chip
 ```
@@ -776,14 +815,19 @@ bun install --cwd mcp/usb-hotplug
 
 `skills/` holds Claude Code skills that drive a whole flash or boot cycle
 through the three MCP servers. They know nothing about a particular bench:
-each looks the device up in `bench.toml` through `tools/bench.py` (Python
-3.11+).
+each looks the device up in the panel's [device map](#devices-and-claims)
+through `tools/bench.py` (Python 3.11+), which finds the panel from
+`bench.toml`.
 
 ```bash
-cp bench.example.toml bench.toml      # then describe your devices
-tools/bench.py check                  # compare it with the live panel
+cp bench.example.toml bench.toml      # the panel's address and bench settings
+tools/bench.py push                   # optional: import [devices.*] tables from it
+tools/bench.py check                  # compare the device map with the live panel
 mkdir -p ~/.claude/skills && ln -s "$PWD"/skills/* ~/.claude/skills/
 ```
+
+`/flash` and `/bootstrap` claim the device before touching it and stop, naming
+the holder, if someone else has it; `/poweroff` releases it.
 
 Link them, do not copy: each skill finds `tools/bench.py` (and `/bootstrap`
 reuses `/flash`'s steps) through its real location in this repo.
@@ -798,7 +842,7 @@ reuses `/flash`'s steps) through its real location in this repo.
 | `/capture start\|stop` | usbmon capture on the Pi |
 | `/deploy-dfu [checkout]` | build and install `dfu-remote` on the Pi |
 
-Every skill works the same for a camera on a backpack: `bench.toml` says which,
+Every skill works the same for a camera on a backpack: its device says which,
 and the skill uses the unit's `bootrom` action and DFU address instead of relays.
 
 [docs/bench.md](docs/bench.md) covers the boot sequence, development loops

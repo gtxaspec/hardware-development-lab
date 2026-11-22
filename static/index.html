@@ -978,6 +978,14 @@ body.edit-mode .device-edit { display: inline-block; }
 .device-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.75rem; }
 .device-form .wide { grid-column: 1 / -1; }
 
+
+.device-claim { font-size: 0.72rem; margin-top: 0.15rem; }
+.device-claim.theirs { color: #ebc577; }
+.device-claim.mine { color: var(--on); }
+.device-claim:empty { display: none; }
+.device-row.claimed-theirs { border-color: #a07a2a; border-style: dashed; }
+.relay-card.is-claimed { outline: 1px dashed #d8aa50; outline-offset: -4px; }
+
 /* --- Backpacks: one card per ESP32 unit and its camera --- */
 .backpacks-section { flex-basis: 100%; }
 .backpack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; }
@@ -1320,15 +1328,35 @@ function setApiToken(tok) {
   } catch (e) { /* private browsing - token lasts for this page only */ }
 }
 
-async function api(method, path, body, { timeout = method === 'GET' ? 5000 : 12000 } = {}) {
+// Who this browser is, for claims: a random id kept per browser, and the name
+// asked for the first time it claims something.
+function benchHolder() {
+  let id = loadPref('relay_panel_holder', null);
+  if (!id) { id = 'browser-' + Math.random().toString(36).slice(2, 10); savePref('relay_panel_holder', id); }
+  return id;
+}
+
+async function api(method, path, body, { timeout = method === 'GET' ? 5000 : 12000, force = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   const opts = { method, signal: controller.signal, headers: { 'Content-Type': 'application/json' } };
   if (apiToken) opts.headers['Authorization'] = 'Bearer ' + apiToken;
+  opts.headers['X-Bench-Holder'] = benchHolder();
+  const holderName = loadPref('relay_panel_holder_name', '');
+  if (holderName) opts.headers['X-Bench-Holder-Label'] = holderName;
+  if (force) opts.headers['X-Bench-Force'] = '1';
   if (body) opts.body = JSON.stringify(body);
   try {
     const res = await fetch(path, opts);
     const data = await res.json();
+    // Someone else holds this device: ask before overriding, once per action.
+    if (res.status === 423 && data.claimed && !force) {
+      clearTimeout(timer);
+      if (confirm(`${data.error.replace(' Pass force to override.', '')}\n\nOverride just this once?`)) {
+        return api(method, path, body, { timeout, force: true });
+      }
+      return { ...data, error: data.error.replace(' Pass force to override.', ''), declined: true };
+    }
     if (!data || typeof data !== 'object') throw new Error('Invalid server response');
     if (res.status === 403) showTokenPrompt(true);
     if (!res.ok || data.error) {
@@ -2189,8 +2217,11 @@ function renderDevicesSection() {
       <div class="device-main">
         <div><span class="device-name">${escHtml(d.name)}</span><span class="device-notes">${escHtml(d.notes || '')}</span></div>
         <div class="device-meta" data-device-meta></div>
+        <div class="device-claim" data-device-claim></div>
       </div>
       <div class="device-actions">
+        <button class="btn-surface btn-sm" type="button" data-device-claim-btn="${d.id}">Claim</button>
+        <button class="btn-surface btn-sm" type="button" data-device-release="${d.id}" hidden>Release</button>
         <button class="btn-surface btn-sm" type="button" data-device-console="${d.id}">Console</button>
         <button class="btn-surface btn-sm device-edit" type="button" data-device-edit="${d.id}">Edit</button>
         <button class="btn-danger btn-sm device-edit" type="button" data-device-remove="${d.id}">Remove</button>
@@ -2217,7 +2248,30 @@ function devicePowerState(d) {
            usable: !!relay };
 }
 
+function deviceClaim(d) {
+  return (state.claims || []).find(c => c.device_id === d.id) || null;
+}
+
+function claimLeft(c) {
+  const m = Math.max(0, Math.round(c.remaining_s / 60));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m left` : `${m}m left`;
+}
+
 function paintDevices() {
+  const me = benchHolder();
+  const claimedRelays = new Map();
+  for (const d of state.devices || []) {
+    const c = deviceClaim(d);
+    if (!c || c.holder === me) continue;
+    for (const role of ['power', 'boot', 'detach']) {
+      if (d[role]) claimedRelays.set(`${d[role].board}/${d[role].relay}`, `${d.name}: in use by ${c.label || c.holder}${c.note ? ` (${c.note})` : ''}`);
+    }
+  }
+  for (const card of boardsEl.querySelectorAll('.relay-card[data-board]')) {
+    const why = claimedRelays.get(`${card.dataset.board}/${card.dataset.relay}`);
+    card.classList.toggle('is-claimed', !!why);
+    if (why) card.title = why; else if (card.classList.contains('is-claimed') === false && card.title.includes('in use by')) card.title = '';
+  }
   for (const d of state.devices || []) {
     const row = boardsEl.querySelector(`.device-row[data-device="${d.id}"]`);
     if (!row) continue;
@@ -2235,6 +2289,15 @@ function paintDevices() {
     setText(meta, parts.filter(Boolean).join(' · '));
     meta.title = meta.textContent;
     row.querySelector('[data-device-console]').disabled = !unit && d.uart == null;
+    const c = deviceClaim(d);
+    const mine = c && c.holder === me;
+    const line = row.querySelector('[data-device-claim]');
+    line.className = `device-claim${c ? (mine ? ' mine' : ' theirs') : ''}`;
+    setText(line, !c ? '' : `${mine ? 'Yours' : `In use by ${c.label || c.holder}`}${c.note ? ` · ${c.note}` : ''} · ${claimLeft(c)}`);
+    row.classList.toggle('claimed-theirs', !!c && !mine);
+    const claimBtn = row.querySelector('[data-device-claim-btn]');
+    setText(claimBtn, !c ? 'Claim' : mine ? 'Extend' : 'Take over');
+    row.querySelector('[data-device-release]').hidden = !mine;
   }
 }
 
@@ -2272,7 +2335,56 @@ async function deviceClick(target) {
     pokePollSoon();
   } else if (target.closest('[data-device-add]')) {
     openDeviceModal(null);
+  } else if (target.closest('[data-device-claim-btn]')) {
+    openClaimModal(find(target.closest('[data-device-claim-btn]').dataset.deviceClaimBtn));
+  } else if (target.closest('[data-device-release]')) {
+    const d = find(target.closest('[data-device-release]').dataset.deviceRelease);
+    const r = await api('DELETE', `/api/claims/${d.id}`);
+    toast(r.error ? `Release failed: ${r.error}` : `${d.name} is free`);
+    pokePollSoon();
   }
+}
+
+function openClaimModal(d) {
+  if (!d) return;
+  let name = loadPref('relay_panel_holder_name', '');
+  if (!name) {
+    name = (prompt('Your name, shown to others while you hold a device:') || '').trim();
+    if (!name) return;
+    savePref('relay_panel_holder_name', name.slice(0, 60));
+  }
+  const c = deviceClaim(d);
+  const theirs = c && c.holder !== benchHolder();
+  let modal = document.getElementById('claimModal');
+  if (!modal) {
+    modal = Object.assign(document.createElement('div'), { id: 'claimModal', className: 'modal-overlay' });
+    modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `<div class="modal" role="dialog" aria-labelledby="claimModalTitle">
+    <h2 id="claimModalTitle">${theirs ? 'Take over' : c ? 'Extend' : 'Claim'} ${escHtml(d.name)}</h2>
+    ${theirs ? `<p style="color:#ebc577;font-size:.85rem">In use by ${escHtml(c.label || c.holder)}${c.note ? ` (${escHtml(c.note)})` : ''}. Taking it over ends their claim.</p>` : ''}
+    <label for="claimNote">What are you doing? (shown to others)</label>
+    <input id="claimNote" value="${escAttr(c && !theirs ? c.note || '' : '')}" placeholder="e.g. flashing U-Boot">
+    <label for="claimDuration">For</label>
+    <select id="claimDuration">${['1h', '2h', '8h', '24h'].map(v => `<option${v === '2h' ? ' selected' : ''}>${v}</option>`).join('')}</select>
+    <p style="color:var(--text-dim);font-size:.75rem">Using the device extends the claim; it ends on its own once the time runs out.</p>
+    <div class="modal-actions">
+      <button class="btn-surface" type="button" data-claim-cancel>Cancel</button>
+      <button class="btn-accent" type="button" data-claim-save>${theirs ? 'Take over' : c ? 'Extend' : 'Claim'}</button>
+    </div>
+  </div>`;
+  modal.querySelector('[data-claim-cancel]').addEventListener('click', () => modal.classList.remove('open'));
+  modal.querySelector('[data-claim-save]').addEventListener('click', async () => {
+    const r = await api('POST', '/api/claims', { device: d.id, note: document.getElementById('claimNote').value.trim(),
+                                                 duration: document.getElementById('claimDuration').value }, { force: theirs });
+    if (r.error) { toast(r.error); return; }
+    modal.classList.remove('open');
+    toast(r.message || `${d.name} claimed`);
+    pokePollSoon();
+  });
+  modal.classList.add('open');
+  modal.querySelector('#claimNote').focus();
 }
 
 // One modal, built on demand, for adding and editing a device.
@@ -3332,6 +3444,7 @@ document.addEventListener('keydown', (e) => {
   if (document.getElementById('addBoardModal').classList.contains('open')) closeModal();
   if (document.getElementById('addGpioModal').classList.contains('open')) closeGpioModal();
   if (document.getElementById('deviceModal')?.classList.contains('open')) closeDeviceModal();
+  document.getElementById('claimModal')?.classList.remove('open');
   for (const [id, close] of PWM_MODALS) {
     if (document.getElementById(id).classList.contains('open')) close();
   }

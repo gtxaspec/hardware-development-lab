@@ -11,7 +11,7 @@ Usage: `/bootstrap <device>`
 
 ## Steps
 
-1. Do "Bench" and "Enter the bootrom" (or "Enter the bootrom: backpack", for a
+1. Do "Bench", "Claim it first" and "Enter the bootrom" (or "Enter the bootrom: backpack", for a
    device with `backpack` set) from `../flash/SKILL.md` (relative to this
    skill's resolved directory), using tag `pre-bootstrap` for the UART log.
 2. Bootstrap:

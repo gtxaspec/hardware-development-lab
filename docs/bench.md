@@ -2,8 +2,8 @@
 
 How the pieces in this repo fit together for SoC bring-up and flash testing,
 and the working habits that keep a bench fast. Your own bench's specifics
-(which board is on which relay, quirks per unit) go in `bench.toml`, not here;
-see `bench.example.toml`.
+(which board is on which relay, quirks per unit) go in the panel's device
+map, not here.
 
 ## The parts
 
@@ -18,7 +18,8 @@ see `bench.example.toml`.
 | usb-hotplug MCP | dev machine, `mcp/usb-hotplug/` | USB add/remove events, `usb_wait` |
 | Backpacks | ESP32 per camera, [thingino-backpack](https://github.com/thingino/thingino-backpack) | a camera's power, boot pin, USB (with its own `dfu-remote`) and console, over the network; the panel finds and drives them |
 | skills | dev machine, `skills/` | `/flash`, `/bootstrap`, `/poweroff`, `/uart`, `/capture`, `/deploy-dfu` |
-| `bench.toml` | repo root, gitignored | device name -> relays, mux, console port |
+| Device map | the panel (`config.json`) | device name -> relays, mux, console port or backpack; claims |
+| `bench.toml` | repo root, gitignored | the panel's address and bench-wide settings for the tools |
 
 Each device needs two relays: one switching its power, one shorting a boot
 pin (on Ingenic, typically SPI flash DI to ground) so the bootrom falls back
@@ -28,16 +29,17 @@ the Pi (for flashing) and a peripheral; the breakout switches data only, the
 relay switches the power (README, "One camera on USB"). Bench-wide rails (a 5 V or 12 V supply on a relay) carry
 "master" in their panel name and are never switched by the skills.
 
-## Setting up bench.toml
+## Setting up the device map
 
 1. Name the relays in the panel UI after the devices they drive.
-2. Copy `bench.example.toml` to `bench.toml`; add one `[devices.<name>]` per
-   unit with its `power` and `boot` relays, or, for a camera on a backpack,
-   `backpack = "<name>"` (the name the panel lists it under).
-3. `tools/bench.py check` reads the live panel and prints the panel's name
+2. Copy `bench.example.toml` to `bench.toml` and set `panel_url`.
+3. In the panel's edit mode, **+ Device** for each camera: its power and boot
+   relays, or for a camera on a backpack, the backpack. (Or write
+   `[devices.<name>]` tables in `bench.toml` and `tools/bench.py push` them.)
+4. `tools/bench.py check` reads the live panel and prints the panel's name
    for every relay you listed, flagging clashes and rails, and whether each
    named backpack is there and online.
-4. Leave `uart` unset until you have seen the board's boot banner on a port
+5. Leave the console unset until you have seen the board's boot banner on a port
    (`tools/uart-listen-all.py` while you power it). A wrong console mapping
    is worse than none: silence on the wrong port reads as "board dead".
 
@@ -68,6 +70,8 @@ path itself is under test (SPL header layout, boot from flash).
 
 ## Habits
 
+- Claim a device before working on it, with a note on what you are doing, and
+  release it when done. Someone else's claim means ask, not force.
 - Assume the code is wrong, not the hardware. Prove the hardware with the
   vendor's own image before blaming a board, and record each unit as
   verified on stock firmware when it joins the bench.

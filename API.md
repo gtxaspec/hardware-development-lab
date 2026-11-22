@@ -264,6 +264,82 @@ Adding takes optional `http_port`, `console_port` and `dfu_port` (80, 3000,
 5050). Ids are never reused, so a token's grant cannot come to mean another
 unit. A removed unit's mDNS name is remembered, and discovery skips it.
 
+## Devices
+
+The bench's device map: one entry per camera. Also in `GET /api/state` as
+`devices`.
+
+```bash
+curl -s $PANEL/api/devices
+```
+
+```json
+{"devices": [{"id": 1, "name": "t31x", "power": {"board": 0, "relay": 10},
+  "boot": {"board": 1, "relay": 8}, "usb_mux": {"wpi": 27, "host_state": "off"},
+  "uart": 0, "uart_name": "ttyUSB0", "settle_secs": 4, "notes": "Z55"},
+ {"id": 2, "name": "t23n", "backpack": 1, "uart": 101, "uart_name": "thingino-backpack-1a2b"}]}
+```
+
+Fields: `name` (unique, any case), `power`, `boot`, `detach` (`{board, relay}`,
+or `"B0/10"` when writing), `usb_mux` (`{wpi, host_state}`, `host_state` being
+the state that routes the camera's USB to the Pi), `uart` (a port number, or
+`"ttyUSB5"` when writing), `backpack` (id, name or mDNS name when writing),
+`notes`, `settle_secs`, `enumerate_timeout_secs`. A device needs a power relay
+or a backpack; a backpack device has no relays, mux or `uart` of its own (its
+console is the unit's). A relay, and a backpack, belong to one device.
+
+Owner only:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" -d '{"name": "t31x", "power": "B0/10", "boot": "B1/8", "uart": 0}' $PANEL/api/devices
+curl -s -X PUT  -H "Content-Type: application/json" -d '{"id": 1, "notes": "Z55", "uart": null}' $PANEL/api/device
+curl -s -X DELETE $PANEL/api/devices/1
+curl -s -X POST -H "Content-Type: application/json" -d '{"devices": [{"name": "t31x", "power": "B0/10"}]}' $PANEL/api/devices/import
+```
+
+`PUT` changes only the fields sent; `null` clears one. `import` updates
+devices by name and adds the rest, all or nothing: one invalid entry and none
+are applied (`errors` lists them). Ids are never reused. Removing a board,
+GPIO or backpack a device uses answers 409 naming the devices; resizing a
+board below a relay a device uses does too.
+
+## Claims
+
+Who is using a device. A claim is a lease: it ends after its duration unless
+renewed.
+
+```bash
+curl -s $PANEL/api/claims
+curl -s -X POST -H "Content-Type: application/json" \
+  -H "X-Bench-Holder: alice-laptop" -H "X-Bench-Holder-Label: Alice" \
+  -d '{"device": "t31x", "note": "flashing U-Boot", "duration": "2h"}' $PANEL/api/claims
+curl -s -X DELETE -H "X-Bench-Holder: alice-laptop" $PANEL/api/claims/t31x
+```
+
+```json
+{"claims": [{"device_id": 1, "device": "t31x", "holder": "alice-laptop", "label": "Alice",
+  "note": "flashing U-Boot", "since": 1795000000.0, "ttl": 7200, "expires": 1795007200.0,
+  "remaining_s": 6912}]}
+```
+
+- **Holder**: every request may carry `X-Bench-Holder` (a stable id) and
+  `X-Bench-Holder-Label` (the name shown to others). Claiming needs a holder.
+- **Duration**: seconds, or `90m`, `2h`; default 2 h, 1 min to 24 h. Claiming a
+  device you already hold renews it and can change the note.
+- **Enforcement**: while a device is claimed, writes that touch it from anyone
+  else answer **423** with `{"error": "t31x is in use by Alice since 14:02
+  (flashing U-Boot); free in 95 min unless renewed. Pass force to override.",
+  "claimed": true, "claim": {...}}`. That covers its relays (`relay/set`,
+  `relay/toggle`, and `board/all` / `board/reset` on a board it uses), its mux
+  GPIO (`gpio/set`, `gpio/toggle`), console input, its backpack's actions and
+  settings, and editing or removing the device. The holder's own such writes
+  renew the lease.
+- **Force**: `X-Bench-Force: 1`, `"force": true` in the body, or `?force=1`
+  overrides once; with `POST /api/claims` it takes the claim over; with
+  `DELETE` it releases someone else's.
+- Claiming needs the same grant as switching the device's power relay (or its
+  backpack). Releasing your own needs no owner rights.
+
 ## Control Relays
 
 ### Toggle a relay
