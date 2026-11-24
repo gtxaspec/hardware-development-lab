@@ -31,6 +31,7 @@ Try it with no hardware at all:
 | **USB** | Ingenic bootrom / U-Boot DFU gadget | read-only | shows what is flashable right now |
 | **UART** | Raw TCP consoles provided by ser2net | `ttyUSB0`–`ttyUSB23`, ports 3000–3023 by default | live output, individually or all together; typing when switched to interactive |
 | **Backpacks** | [thingino backpack](https://github.com/thingino/thingino-backpack) ESP32 units, one per camera | found over mDNS, or added by address | camera power, boot pin, enter bootrom, power cycle, USB view, console; flashing goes to the unit |
+| **Devices** | the cameras on the bench | name, set in the panel | which relays, GPIO and console each camera uses; **claims** mark one in use by whom, and others' switching is refused unless forced |
 
 The PWM section exists to simulate day/night transitions for camera testing:
 continuous, repeatable light levels rather than the relay-binary room light the
@@ -774,6 +775,13 @@ than a deploy.
 Adding, removing and re-addressing boards and PWM chips is deliberately **not**
 exposed as tools. That is physical setup, done in the web UI.
 
+Devices and claims are: `list_devices`, `set_device` and `remove_device` read
+and edit the device map, and `claim_device`, `release_device` and
+`list_claims` mark a device in use ([Devices and claims](#devices-and-claims)).
+Every request carries the session's holder id, and the switching tools take
+`force` to go past someone else's claim, which their descriptions tell an
+agent to do only after asking.
+
 ### UART and USB MCP servers
 
 Two more servers live under `mcp/`. Both run on the dev machine and go in the
@@ -786,6 +794,10 @@ a port as `5`, `ttyUSB5` or `3005`; names are optional aliases in
 `mcp/uart/aliases.json` (gitignored; see `aliases.example.json`), re-read on
 every call and settable with the `name_uart` tool. Match `UART_HOST`,
 `UART_BASE_PORT` and `UART_COUNT` to the panel's `RELAY_PANEL_UART_*`.
+With `RELAY_PANEL_URL` set it also honours [claims](#devices-and-claims):
+typing into the console of a device another session has claimed is refused
+unless the tool is given `force=true`; reading never is. It counts as the same
+holder as the session's relay-panel server.
 
 **`mcp/usb-hotplug/server.ts`** runs `udevadm monitor` on the Pi over ssh and
 pushes each USB add/remove as a channel notification, with `usb_wait` to block
