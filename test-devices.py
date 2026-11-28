@@ -248,5 +248,38 @@ class ClaimTests(PanelFixture):
         self.assertIn("bpcam is in use", body["error"])
 
 
+
+class DisabledBoardTests(PanelFixture):
+    def test_a_disabled_board_is_left_alone(self):
+        reads = []
+        with patch.object(rp, "get_board_states", side_effect=lambda b, background=False: (
+                reads.append(b["address"]) or ({i: False for i in range(b["size"])}, None))), \
+             patch.object(rp, "set_relay", return_value=True) as set_relay, \
+             patch.object(rp, "set_all"), patch.object(rp, "i2c_init_board") as init:
+            self.assertEqual(self.call("PUT", "/api/board/settings", {"board": 2, "disabled": "yes"})[0], 400)
+            self.assertEqual(self.call("PUT", "/api/board/settings", {"board": 2, "disabled": True})[0], 200)
+            init.assert_not_called()
+            state = rp.get_full_state(rp.load_config())
+            self.assertNotIn("0x21", reads, "a disabled board is not read")
+            self.assertEqual((state[2]["disabled"], state[2]["error"]), (True, None))
+            for path, body in [("/api/relay/set", {"board": 2, "relay": 1, "state": True}),
+                               ("/api/relay/toggle", {"board": 2, "relay": 1}),
+                               ("/api/board/all", {"board": 2, "state": False}), ("/api/board/reset", {"board": 2})]:
+                status, answer = self.call("POST", path, body)
+                self.assertEqual(status, 409, path)
+                self.assertIn("is disabled", answer["error"])
+            set_relay.assert_not_called()
+            with patch.object(rp, "init_gpios"), patch.object(rp, "init_pwm"):
+                rp.init_boards(rp.load_config())
+            self.assertNotIn(("2", "0x21"), [(str(c.args[0]), c.args[1]) for c in init.call_args_list])
+            self.assertEqual(self.call("POST", "/api/relay/set", {"board": 0, "relay": 1, "state": True})[0], 200)
+            self.assertEqual(self.call("PUT", "/api/board/settings", {"board": 2, "disabled": False})[0], 200)
+            init.reset_mock()
+            self.assertEqual(self.call("POST", "/api/relay/set", {"board": 2, "relay": 1, "state": True})[0], 200)
+            rp.get_full_state(rp.load_config())
+            self.assertIn("0x21", reads, "enabled again, it is read again")
+            self.assertTrue(rp.load_config()["boards"][2].get("disabled") is False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -447,6 +447,20 @@ curl -s -X PUT -H 'Content-Type: application/json' \
 
 Response: `{"ok": true}`
 
+### Disable or enable a board
+
+```bash
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"board":2,"disabled":true}' $PANEL/api/board/settings
+```
+
+A disabled board keeps its setup but is left alone: not read by the sampler
+or initialised at start-up, so a board that is down costs no bus timeouts.
+`GET /api/state` shows it with `"disabled": true` and every relay `off`
+(unknown, in fact); switching it (`relay/set`, `relay/toggle`, `board/all`,
+`board/reset`) answers **409** until it is enabled. Enabling only resumes
+reading; reset it if it was power-cycled while down. Owner only.
+
 ## Display Settings
 
 ### Toggle layout (grid / PCB view)

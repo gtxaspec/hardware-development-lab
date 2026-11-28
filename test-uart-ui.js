@@ -667,6 +667,22 @@ async function test(name, run) {
     await page.evaluate(() => fetch('/api/claims/t31x', { method: 'DELETE', headers: { 'X-Bench-Holder': 'other' } }));
   });
 
+  await test('a board can be disabled and enabled without losing its setup', async page => {
+    page.on('dialog', dialog => dialog.accept());
+    await page.click('#editModeBtn');
+    await page.click('[data-board-disable="1"]');
+    await page.waitForSelector('.board-section.board-disabled[data-board-idx="1"]');
+    assert.match(await page.textContent('.board-section[data-board-idx="1"] .board-disabled-badge'), /Disabled/);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('[data-board="1"][data-relay="0"]')).pointerEvents), 'none');
+    const refused = await page.evaluate(() => api('POST', '/api/relay/set', { board: 1, relay: 0, state: true }));
+    assert.match(refused.error, /is disabled/);
+    await page.click('#editModeBtn');
+    assert.equal(await page.isVisible('[data-board-enable="1"]'), true, 'Enable shows outside edit mode');
+    await page.click('[data-board-enable="1"]');
+    await page.waitForSelector('.board-section[data-board-idx="1"]:not(.board-disabled)');
+    assert.equal(await page.textContent('.board-section[data-board-idx="1"] .board-name'), 'Boot Select');
+  });
+
   console.log(`\n${passed}/${passed + failed} UART browser regressions passed`);
   process.exitCode = failed ? 1 : 0;
 })().catch(error => {

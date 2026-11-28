@@ -146,6 +146,11 @@ def cmd_check(bench):
             r = d.get(role)
             if not r:
                 continue
+            if r["board"] < len(boards) and boards[r["board"]].get("disabled"):
+                print(f"{name}: {role} {relay(r)} is on disabled board {r['board']} "
+                      f"({boards[r['board']]['name']}); it cannot be switched until enabled")
+                bad += 1
+                continue
             try:
                 label = boards[r["board"]]["relays"][r["relay"]].get("name", "")
             except (IndexError, KeyError):

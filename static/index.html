@@ -954,6 +954,12 @@ body.edit-mode .board-name { cursor: pointer; }
 
 
 
+
+/* A board switched off in the panel (e.g. while it is down): shown, not read. */
+.board-disabled .relay-card { opacity: 0.35; pointer-events: none; }
+.board-disabled .board-outline { border-style: dashed; }
+.board-disabled-badge { color: #ebc577; font-size: 0.75rem; }
+
 /* --- Devices: the bench's device map, one row per camera --- */
 .devices-section { flex-basis: 100%; }
 body:not(.show-devices) .devices-section { display: none; }
@@ -1551,6 +1557,7 @@ async function sendSwitchCommand(actions, path, body, label) {
 async function toggleRelay(boardIdx, relayNum) {
   const board = state.boards[boardIdx];
   if (!board) return;
+  if (board.disabled) { toast(`${board.name} is disabled; enable it first`); return; }
   const key = relayKey(board, relayNum);
   const reading = switchReadings().get(key);
   if (pendingSwitches.has(key)) return;
@@ -2248,8 +2255,8 @@ function devicePowerState(d) {
   if (!d.power) return { on: false, busy: false, usable: false };
   const board = state.boards?.[d.power.board];
   const relay = board?.relays?.[d.power.relay];
-  return { on: relay?.state === 'on', busy: board ? pendingSwitches.has(relayKey(board, d.power.relay)) : false,
-           usable: !!relay };
+  return { on: !board?.disabled && relay?.state === 'on', busy: board ? pendingSwitches.has(relayKey(board, d.power.relay)) : false,
+           usable: !!relay && !board.disabled };
 }
 
 function deviceClaim(d) {
@@ -2290,7 +2297,8 @@ function paintDevices() {
     sw.disabled = !power.usable;
     const unit = deviceBackpack(d);
     const parts = unit ? [`backpack ${unit.name}`, unit.online ? null : 'offline']
-      : [`power ${relayLabel(d.power)}`, d.boot ? `boot ${relayLabel(d.boot)}` : null,
+      : [state.boards?.[d.power.board]?.disabled ? 'board disabled' : null,
+         `power ${relayLabel(d.power)}`, d.boot ? `boot ${relayLabel(d.boot)}` : null,
          d.usb_mux ? `mux wPi ${d.usb_mux.wpi}` : null, d.uart != null ? uartLabel(d.uart) : null];
     const meta = row.querySelector('[data-device-meta]');
     setText(meta, parts.filter(Boolean).join(' · '));
@@ -2624,6 +2632,15 @@ function backpackClick(target) {
   }
 }
 
+async function setBoardDisabled(bi, disabled) {
+  const board = state.boards[bi];
+  if (disabled && !confirm(`Disable ${board.name}? The panel stops reading and switching it until you enable it again; its relays stay as they are.`)) return;
+  const r = await api('PUT', '/api/board/settings', { board: bi, disabled });
+  if (r.error) { toast(r.error); return; }
+  toast(disabled ? `${board.name} disabled` : `${board.name} enabled; Reset it if it was power-cycled while down`);
+  fetchState(true);
+}
+
 function renderStructure() {
   const noBoards = !state.boards || state.boards.length === 0;
   const noGpios = !state.gpios || state.gpios.length === 0;
@@ -2681,6 +2698,20 @@ function renderStructure() {
       relayContainer = `<div class="relay-grid">${relayCards}</div>`;
     }
 
+    if (board.disabled) {
+      return `<div class="board-section board-disabled" data-board-idx="${bi}">
+      <div class="board-header">
+        <span class="board-name" data-board-idx="${bi}" title="Click to rename">${escHtml(board.name)}</span>
+        <span class="board-addr" data-board-idx="${bi}">${board.address} bus:${board.bus} (${board.size}ch)</span>
+        <span class="board-disabled-badge">Disabled · not read over I²C</span>
+        <div class="board-actions">
+          <button class="btn-surface btn-sm" data-board-enable="${bi}" title="Start reading and switching this board again">Enable</button>
+          ${editMode && state.boards.length > 1 ? `<button class="btn-danger btn-sm" onclick="deleteBoard(${bi})">Remove</button>` : ''}
+        </div>
+      </div>
+      ${relayContainer}
+    </div>`;
+    }
     return `<div class="board-section" data-board-idx="${bi}">
       <div class="board-header">
         <span class="board-name" data-board-idx="${bi}" title="Click to rename">${escHtml(board.name)}</span>
@@ -2692,6 +2723,7 @@ function renderStructure() {
           <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="setAll(${bi}, true)">All On</button>
           <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="setAll(${bi}, false)">All Off</button>
           <button class="btn-surface btn-sm" data-board-command="${bi}" onclick="resetBoard(${bi})" title="Re-init I2C and set all OFF">Reset</button>
+          ${editMode ? `<button class="btn-surface btn-sm" data-board-disable="${bi}" title="Stop reading and switching this board, e.g. while it is down; its setup is kept">Disable</button>` : ''}
           ${editMode && state.boards.length > 1 ? `<button class="btn-danger btn-sm" onclick="deleteBoard(${bi})">Remove</button>` : ''}
         </div>
       </div>
@@ -2710,7 +2742,7 @@ let renderedUsb = null;
 
 function structureSignature() {
   return JSON.stringify([editMode,
-    (state.boards || []).map(b => [b.bus, b.address, b.name, b.size, b.layout, b.flipped,
+    (state.boards || []).map(b => [b.bus, b.address, b.name, b.size, b.layout, b.flipped, b.disabled,
       b.relays.map(r => [r.num, r.name])]),
     (state.gpios || []).map(g => [g.wpi, g.pin, g.name]),
     (state.backpacks || []).map(b => [b.id, b.name, b.uart]),
@@ -2942,6 +2974,8 @@ function render() {
 boardsEl.addEventListener('click', (e) => {
   const collapse = e.target.closest('[data-collapse]');
   if (collapse) { toggleSectionCollapse(collapse.dataset.collapse); return; }
+  const enable = e.target.closest('[data-board-enable], [data-board-disable]');
+  if (enable) { setBoardDisabled(Number(enable.dataset.boardEnable ?? enable.dataset.boardDisable), 'boardDisable' in enable.dataset); return; }
   if (e.target.closest('.backpacks-section')) { backpackClick(e.target); return; }
   if (e.target.closest('.devices-section')) { deviceClick(e.target); return; }
   // Ignore clicks on inputs (active inline editing)

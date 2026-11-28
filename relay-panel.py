@@ -1059,11 +1059,16 @@ def get_full_state(config, background=False):
     """Get the full state of all boards and relays."""
     result = []
     for idx, board in enumerate(config["boards"]):
-        try:
-            states, error = get_board_states(board, background=background)
-        except Exception as e:
-            states = {i: False for i in range(board["size"])}
-            error = str(e)
+        if board.get("disabled"):
+            # Not read at all: a board that is down would only cost every
+            # sweep a bus timeout, and its last state is unknown anyway.
+            states, error = {}, None
+        else:
+            try:
+                states, error = get_board_states(board, background=background)
+            except Exception as e:
+                states = {i: False for i in range(board["size"])}
+                error = str(e)
         relays = []
         for i in range(board["size"]):
             name = board.get("relays", {}).get(str(i), f"Relay {i}")
@@ -1080,6 +1085,7 @@ def get_full_state(config, background=False):
             "size": board["size"],
             "layout": board.get("layout", "grid"),
             "flipped": board.get("flipped", False),
+            "disabled": bool(board.get("disabled")),
             "relays": relays,
             "error": error,
         })
@@ -2006,6 +2012,15 @@ class RelayHandler(BaseHTTPRequestHandler):
                 or (isinstance(body, dict) and body.get("force") is True)
                 or parse_qs(urlparse(self.path).query).get("force", [""])[0] == "1")
 
+    def refused_disabled(self, config, board_idx):
+        """Send 409 and return True for a board switched off in the panel."""
+        board = config["boards"][board_idx]
+        if not board.get("disabled"):
+            return False
+        self.send_json({"error": f"board {board_idx} ({board.get('name', '')}, {board['address']}) is disabled; "
+                                 "enable it first", "disabled": True}, 409)
+        return True
+
     def refused_by_claim(self, devices, body=None):
         """Send 423 and return True if another holder's claim covers any of these
         devices. The holder's own writes renew their lease."""
@@ -2213,6 +2228,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
+            if self.refused_disabled(config, board_idx):
+                return
             if self.refused_by_claim(devices_for(config, relays=[(board_idx, relay_num)]), body):
                 return
             board = config["boards"][board_idx]
@@ -2244,6 +2261,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if board_idx >= len(config["boards"]):
                 self.send_json({"error": "Invalid board"}, 400)
                 return
+            if self.refused_disabled(config, board_idx):
+                return
             if self.refused_by_claim(devices_for(config, relays=[(board_idx, relay_num)]), body):
                 return
             board = config["boards"][board_idx]
@@ -2274,6 +2293,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             board = config["boards"][board_idx]
             if not self.authorize_board_bulk(board_idx, board["size"]):
                 self.forbidden()
+                return
+            if self.refused_disabled(config, board_idx):
                 return
             if self.refused_by_claim(devices_for(config, board=board_idx), body):
                 return
@@ -2693,6 +2714,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not self.authorize_board_bulk(board_idx, board["size"]):
                 self.forbidden()
                 return
+            if self.refused_disabled(config, board_idx):
+                return
             if self.refused_by_claim(devices_for(config, board=board_idx), body):
                 return
             try:
@@ -3034,6 +3057,16 @@ class RelayHandler(BaseHTTPRequestHandler):
                     board["address"] = new_addr
                 if "bus" in body:
                     board["bus"] = body["bus"]
+                if "disabled" in body:
+                    if not isinstance(body["disabled"], bool):
+                        self.send_json({"error": "disabled must be true or false"}, 400)
+                        return
+                    # Enabling only resumes reading: re-initialising would switch
+                    # off whatever a board disabled by mistake was still doing.
+                    board["disabled"] = body["disabled"]
+                    save_config(config)
+                    self.send_json({"ok": True, "disabled": board["disabled"]})
+                    return
                 if "size" in body:
                     old_size = board["size"]
                     new_size = body["size"]
@@ -3048,12 +3081,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                             if str(i) not in board.get("relays", {}):
                                 board.setdefault("relays", {})[str(i)] = f"Relay {i}"
                 save_config(config)
-            try:
-                addr = config["boards"][board_idx]["address"]
-                bus = config["boards"][board_idx]["bus"]
-                i2c_init_board(bus, addr)
-            except Exception:
-                pass
+            if not config["boards"][board_idx].get("disabled"):
+                try:
+                    addr = config["boards"][board_idx]["address"]
+                    bus = config["boards"][board_idx]["bus"]
+                    i2c_init_board(bus, addr)
+                except Exception:
+                    pass
             self.send_json({"ok": True})
 
         else:
@@ -3202,6 +3236,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 def init_boards(config):
     """Initialize all configured boards and set all relays OFF."""
     for board in config["boards"]:
+        if board.get("disabled"):
+            print(f"  Skipped disabled board at {board['address']} on bus {board['bus']}")
+            continue
         try:
             # i2c_init_board already leaves every relay off, as part of coming
             # up in an order that never drives them. A set_all afterwards would

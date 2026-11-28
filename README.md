@@ -609,6 +609,12 @@ ignores additional clicks while pending. Failed or timed-out readings show
 an unavailable reading into a confirmed OFF. Polling continues during slider
 use and inline editing without replacing the active control.
 
+A relay board that is down can be **disabled** (edit mode, **Disable** on the
+board): it keeps its setup but is not read or switched, so it stops costing
+the bus a timeout every second. It shows greyed out with an **Enable** button;
+enabling resumes reading, and **Reset** puts a board that was power-cycled
+while down back to all off. Devices on it show as unavailable.
+
 **Edit mode** (the `Edit` button, or `E`) reveals everything structural: rename
 by clicking a card, edit a board's address by clicking its address line, and the
 `×` / `Remove` / `+ Ch` / `+ Group` controls. Keeping those behind Edit is why
